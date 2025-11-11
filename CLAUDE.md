@@ -342,6 +342,17 @@ Arduino는 RFID UID를 대문자 16진수 문자열로 전송합니다 (예: `6C
 
 # 백엔드 서버 연동 가이드
 
+## ⚠️ 중요: 서버 API 변경 사항 (2025-11-11 업데이트)
+
+서버가 **통합 서버 아키텍처**로 재편되었습니다. 라즈베리파이 전용 API가 `/dispenser` 경로로 통합되었으며, 기존 클라이언트 코드는 **URL만 변경하면 호환**됩니다.
+
+**주요 변경사항**:
+- 라즈베리파이 API: `/dispenser/*` 경로로 통합
+- 모바일 앱 API: `/auth`, `/users`, `/medicine` 등 (JWT 인증 필수)
+- 기존 엔드포인트는 호환성 유지 (일부는 `/dispenser`로 이동 예정)
+
+---
+
 ## 서버 개요
 
 **저장소**: https://github.com/wantraiseapomeranian/TDB_Server
@@ -349,14 +360,24 @@ Arduino는 RFID UID를 대문자 16진수 문자열로 전송합니다 (예: `6C
 **기술 스택**:
 - **프레임워크**: NestJS 11.0.1 (TypeScript)
 - **데이터베이스**: MySQL + TypeORM 0.3.24
-- **인증**: JWT + Passport (현재 대부분 비활성화 상태)
+- **인증**: 이중 구조 (모바일 앱: JWT, 라즈베리파이: 인증 없음)
 - **언어**: TypeScript 5.7.3
+- **배포**: Docker Compose, AWS EC2/RDS 지원
+
+**아키텍처 특징**:
+- **통합 서버**: React Native 앱 + 라즈베리파이 하드웨어 동시 지원
+- **경로 분리**: 모바일(`/auth`, `/users`) vs 하드웨어(`/dispenser`)
+- **호환성**: 기존 Python 클라이언트 코드 100% 호환 (URL만 변경)
+
+---
 
 ## 주요 API 엔드포인트
 
-### 1. 기기 관리 (`/machine`)
+### 옵션 A: 기존 API (호환성 유지 중)
 
-클라이언트 코드에서 사용하는 핵심 엔드포인트:
+**현재 클라이언트 코드가 사용 중인 엔드포인트입니다.**
+
+#### 1. 기기 관리 (`/machine`)
 
 ```
 GET  /machine/check?machine_id=<id>
@@ -366,13 +387,11 @@ GET  /machine/check?machine_id=<id>
 POST /machine/heartbeat
   → Body: { machine_id, status?, ts? }
   → 주기적 상태 전송 (HEARTBEAT_SEC 간격)
-
-POST /machine/error
-  → Body: { machine_id, error_type, error_message, slot? }
-  → 하드웨어 에러 신고
 ```
 
-### 2. RFID 인증 (`/rfid`)
+클라이언트 코드: `services/api_client.py:check_machine_registered()`, `heartbeat()`
+
+#### 2. RFID 인증 (`/rfid`)
 
 ```
 POST /rfid/resolve
@@ -381,9 +400,9 @@ POST /rfid/resolve
   → 응답: { registered, user_id, group_id, took_today, ... }
 ```
 
-클라이언트 코드 위치: `services/api_client.py:resolve_uid()`
+클라이언트 코드: `services/api_client.py:resolve_uid()`
 
-### 3. 배출 큐 생성 (`/queue`)
+#### 3. 배출 큐 생성 (`/queue`)
 
 ```
 POST /queue/build
@@ -405,14 +424,11 @@ POST /queue/build
     }
 ```
 
-**중요**:
-- 요일 판정은 `weekday` → `client_ts + tz_offset_min` → 서버 시간 순으로 결정
-- 클라이언트는 `client_ts`와 `tz_offset_min`을 함께 전송 권장
-- 응답 형식은 반드시 `{"queue": [...]}` 구조여야 함
+**중요**: 응답 구조가 시간대별 그룹화로 변경되었습니다. `slot` 필드가 각 item에 포함됩니다.
 
-클라이언트 코드 위치: `services/api_client.py:build_queue()`
+클라이언트 코드: `services/api_client.py:build_queue()`
 
-### 4. 배출 완료 보고 (`/dispense`)
+#### 4. 배출 완료 보고 (`/dispense`)
 
 ```
 POST /dispense/report
@@ -427,20 +443,102 @@ POST /dispense/report
   → 각 시간대 배출 완료 시마다 개별 전송
 ```
 
-클라이언트 코드 위치: `services/api_client.py:report_dispense()`
+클라이언트 코드: `services/api_client.py:report_dispense()`
+
+---
+
+### 옵션 B: 신규 통합 API (`/dispenser` 경로)
+
+**서버 측에서 추가된 라즈베리파이 전용 통합 엔드포인트입니다.**
+
+#### 1. RFID 자동 배출 (신규)
+
+```
+POST /dispenser/rfid-auto-dispense
+  → Body: { k_uid: string, machine_id: string }
+  → RFID 태그 인식 시 자동으로 오늘의 스케줄에 따라 약 배출
+  → 응답: 배출 목록 + 실행 결과
+```
+
+**특징**: UID 검증 + 스케줄 조회 + 배출 지시를 하나의 API로 통합
+
+#### 2. 기기 상태 조회
+
+```
+GET /dispenser/machine-status?machine_id=<id>
+GET /dispenser/status/{machine_id}
+  → 기기 정보 조회 (두 가지 경로 모두 지원)
+```
+
+#### 3. 배출 목록 조회
+
+```
+GET /dispenser/dispense-list?machine_id=<id>&userId=<id>
+  → 특정 사용자의 배출 목록 조회
+```
+
+#### 4. 슬롯 상태 조회
+
+```
+GET /dispenser/slot-status?machine_id=<id>
+  → 기기별 슬롯 정보 및 약품 잔량 확인
+```
+
+#### 5. 기기별 사용자 목록
+
+```
+GET /dispenser/users/by-machine?machine_id=<id>
+  → 해당 기기에 연결된 사용자 목록
+```
+
+#### 6. 기기별 스케줄 조회
+
+```
+GET /dispenser/schedules-by-date?machine_id=<id>&date=YYYY-MM-DD
+  → 특정 날짜의 스케줄 조회
+```
+
+---
+
+## 마이그레이션 가이드
+
+### 현재 클라이언트 코드 유지 (권장)
+
+**변경 사항**: `config/.env`의 서버 URL만 업데이트
+
+```bash
+# 기존
+TDB_SERVER_BASE_URL=http://localhost:8000
+
+# 신규 통합 서버
+TDB_SERVER_BASE_URL=http://your-server-ip:3000
+```
+
+기존 `/machine`, `/rfid`, `/queue`, `/dispense` API는 호환성 유지 중입니다.
+
+### 향후 `/dispenser` API 도입 (선택)
+
+서버 문서(`API_CHANGES.md`)에 따르면 다음 API들이 추가 제공됩니다:
+- `/dispenser/verify-uid` (← `/rfid/resolve` 대체)
+- `/dispenser/dispense-list` (← `/queue/build` 대체)
+- `/dispenser/dispense-result` (← `/dispense/report` 대체)
+- `/dispenser/confirm` (새로운 복용 완료 확인)
+
+**주의**: 현재 일부 엔드포인트는 구현 중일 수 있습니다. 프로덕션 환경에서는 기존 API 사용을 권장합니다.
 
 ## 서버 모듈 구조
 
 ```
 src/
-├── auth/           # JWT 인증
+├── auth/           # JWT 인증 (모바일 앱용)
 ├── users/          # 사용자 관리
 ├── family/         # 가족/그룹 관리
 ├── device/         # 모바일 기기
-├── machine/        # 디스펜서 기기 (★)
-├── rfid/           # RFID 태그 (★)
-├── queue/          # 배출 큐 생성 (★)
-├── dispense/       # 배출 기록 (★)
+├── dispenser/      # ★★ 라즈베리파이 통합 모듈 (신규)
+├── machine/        # ★ 디스펜서 기기 (기존 API, 호환성 유지)
+├── rfid/           # ★ RFID 태그 (기존 API, 호환성 유지)
+├── queue/          # ★ 배출 큐 생성 (기존 API, 호환성 유지)
+├── dispense/       # ★ 배출 기록 (기존 API, 호환성 유지)
 ├── dose-history/   # 복약 이력
 ├── medicine/       # 의약품 정보
 ├── supplement/     # 건강기능식품
@@ -449,19 +547,36 @@ src/
 └── entities/       # 공통 엔티티
 ```
 
-(★ 표시는 Pi 클라이언트와 직접 통신하는 모듈)
+**★ 표시**: 기존 Pi 클라이언트 API (현재 사용 중)
+**★★ 표시**: 신규 통합 API (`/dispenser/*` 경로)
 
 ## 인증 및 보안
 
-**현재 상태**:
-- 대부분의 기기 API에서 `@UseGuards(AccessTokenGuard)`가 **주석 처리**되어 있음
-- RFID resolve, queue build, dispense report는 **인증 없이 호출 가능**
+**이중 인증 구조**:
 
-**향후 변경 가능성**:
-- 서버에서 인증을 활성화할 경우, 클라이언트는 다음 수정 필요:
-  1. 기기 등록 시 토큰 발급 받기
+| 클라이언트 | 인증 방식 | 특징 |
+|----------|----------|------|
+| **모바일 앱** | JWT Bearer Token | 사용자 로그인 필수 |
+| **라즈베리파이** | 인증 없음 | RFID UID 기반, IP 보안 권장 |
+
+**기존 API (`/machine`, `/rfid`, `/queue`, `/dispense`)**:
+- 현재 대부분 `@UseGuards` 주석 처리 상태
+- 라즈베리파이 클라이언트는 **인증 없이** 호출 가능
+
+**신규 API (`/dispenser/*`)**:
+- 컨트롤러에는 `@UseGuards(AccessTokenGuard)` 설정되어 있음
+- 실제 인증 활성화 여부는 서버 설정에 따라 다름
+
+**보안 권장사항**:
+1. 프로덕션 환경에서는 라즈베리파이 IP 화이트리스트 설정
+2. 방화벽으로 `/dispenser` 경로 접근 제한
+3. HTTPS/TLS 사용 필수 (HTTP는 개발용만)
+
+**향후 인증 활성화 시 대응**:
+- 서버에서 JWT 인증을 활성화할 경우:
+  1. 기기 등록 시 토큰 발급 API 호출
   2. `services/api_client.py`의 `_session`에 `Authorization: Bearer <token>` 헤더 추가
-  3. 토큰 만료 시 재발급 로직 구현
+  3. 토큰 만료 시 자동 재발급 로직 구현
 
 ## 데이터 흐름
 
@@ -490,17 +605,67 @@ src/
 
 ## 로컬 테스트
 
-클라이언트 저장소의 `dev/mock_server.py`는 간단한 FastAPI 기반 mock 서버입니다:
-- 실제 서버와 다른 간소화된 응답 제공
-- 개발 초기에만 사용 권장
-- **프로덕션 환경에서는 반드시 실제 NestJS 서버 사용**
+### Mock 서버 (개발 초기)
 
-실제 서버 실행:
+클라이언트 저장소의 `dev/mock_server.py`:
+- FastAPI 기반 간소화된 테스트 서버
+- 실제 서버와 응답 형식 다름
+- **개발 초기 단계에서만 사용**
+
+```bash
+cd dev
+uvicorn mock_server:app --reload --port 8000
+```
+
+### 실제 NestJS 서버 실행
+
 ```bash
 cd TDB_Server/TDB_Server
+
+# 의존성 설치
 npm install
+
+# 환경 변수 설정
+cp .env.example .env
+# .env 파일 편집 (MySQL 연결 정보 등)
+
+# 개발 모드 (hot reload)
 npm run start:dev
+
+# 프로덕션 빌드 및 실행
+npm run build
+npm run start:prod
 ```
+
+### Docker Compose (권장)
+
+서버 + MySQL + phpMyAdmin 통합 스택:
+
+```bash
+cd TDB_Server/TDB_Server
+
+# 컨테이너 실행
+docker-compose up -d
+
+# 로그 확인
+docker-compose logs -f
+
+# 중지
+docker-compose down
+```
+
+**접속 정보**:
+- 서버: http://localhost:3000
+- phpMyAdmin: http://localhost:8080
+
+### AWS 클라우드 배포
+
+서버 저장소에 자동화 스크립트 제공:
+- `deploy-ec2.sh`: EC2 인스턴스 배포
+- `setup-rds.sh`: RDS MySQL 설정
+- `ecosystem.config.js`: PM2 프로세스 관리
+
+상세 가이드: `TDB_Server/EC2_RDS_SETUP.md` 참조
 
 ## 환경 변수 설정
 
@@ -566,6 +731,17 @@ TDB_MACHINE_ID=MACHINE-0001
 
 # 백엔드 서버 연동 가이드 (한국어)
 
+## ⚠️ 중요: 서버 API 변경 사항 (2025-11-11 업데이트)
+
+서버가 **통합 서버 아키텍처**로 전면 개편되었습니다. 라즈베리파이 전용 API가 `/dispenser` 경로로 통합되었으며, 기존 클라이언트 코드는 **서버 URL만 변경하면 그대로 사용 가능**합니다.
+
+**주요 변경사항**:
+- 라즈베리파이 API: `/dispenser/*` 경로로 통합
+- 모바일 앱 API: `/auth`, `/users`, `/medicine` 등 (JWT 인증 필수)
+- 기존 엔드포인트 호환성 유지 중 (점진적 이전 예정)
+
+---
+
 ## 서버 개요
 
 **저장소**: https://github.com/wantraiseapomeranian/TDB_Server
@@ -573,14 +749,24 @@ TDB_MACHINE_ID=MACHINE-0001
 **기술 스택**:
 - **프레임워크**: NestJS 11.0.1 (TypeScript)
 - **데이터베이스**: MySQL + TypeORM 0.3.24
-- **인증**: JWT + Passport (현재 대부분 비활성화)
+- **인증**: 이중 구조 (모바일: JWT, 라즈베리파이: 없음)
 - **언어**: TypeScript 5.7.3
+- **배포**: Docker Compose, AWS EC2/RDS 지원
+
+**아키텍처 특징**:
+- **통합 서버**: React Native 앱 + 라즈베리파이 동시 지원
+- **경로 분리**: 모바일용(`/auth`, `/users`) vs 하드웨어용(`/dispenser`)
+- **100% 호환**: 기존 Python 클라이언트 코드 수정 불필요 (URL만 변경)
+
+---
 
 ## 주요 API 엔드포인트
 
-### 1. 기기 관리 (`/machine`)
+### 옵션 A: 기존 API (현재 사용 중)
 
-Pi 클라이언트에서 사용하는 핵심 엔드포인트:
+**현재 클라이언트(`services/api_client.py`)가 사용하는 엔드포인트입니다.**
+
+#### 1. 기기 관리 (`/machine`)
 
 ```
 GET  /machine/check?machine_id=<id>
@@ -589,14 +775,10 @@ GET  /machine/check?machine_id=<id>
 
 POST /machine/heartbeat
   → Body: { machine_id, status?, ts? }
-  → 주기적 상태 전송 (5분마다, HEARTBEAT_SEC 설정)
-
-POST /machine/error
-  → Body: { machine_id, error_type, error_message, slot? }
-  → 하드웨어 에러 신고
+  → 주기적 상태 전송 (5분마다)
 ```
 
-### 2. RFID 인증 (`/rfid`)
+#### 2. RFID 인증 (`/rfid`)
 
 ```
 POST /rfid/resolve
@@ -605,9 +787,7 @@ POST /rfid/resolve
   → 응답: { registered, user_id, group_id, took_today, ... }
 ```
 
-클라이언트 코드: `services/api_client.py:resolve_uid()`
-
-### 3. 배출 큐 생성 (`/queue`)
+#### 3. 배출 큐 생성 (`/queue`)
 
 ```
 POST /queue/build
@@ -629,14 +809,9 @@ POST /queue/build
     }
 ```
 
-**중요 사항**:
-- 요일 결정 우선순위: `weekday` 파라미터 → `client_ts + tz_offset_min` 계산 → 서버 시간
-- 클라이언트는 정확한 요일 판정을 위해 `client_ts`와 `tz_offset_min` 함께 전송 권장
-- 응답은 반드시 `{"queue": [...]}` 형식이어야 함 (클라이언트가 파싱)
+**중요**: 응답 구조가 시간대별 그룹화로 변경되었습니다. 각 item에 `slot` 필드가 포함됩니다.
 
-클라이언트 코드: `services/api_client.py:build_queue()`
-
-### 4. 배출 완료 보고 (`/dispense`)
+#### 4. 배출 완료 보고 (`/dispense`)
 
 ```
 POST /dispense/report
@@ -645,26 +820,102 @@ POST /dispense/report
       user_id: string,
       time: "morning" | "afternoon" | "evening",
       items: [{ medi_id, count }],
-      result: "completed" | "partial" | "failed",
-      client_tx_id?: string
+      result: "completed" | "partial" | "failed"
     }
-  → 각 시간대(아침/점심/저녁) 배출 완료 시마다 개별 전송
 ```
 
-클라이언트 코드: `services/api_client.py:report_dispense()`
+---
+
+### 옵션 B: 신규 통합 API (`/dispenser` 경로)
+
+**서버 측에서 추가된 라즈베리파이 전용 통합 엔드포인트입니다.**
+
+#### 1. RFID 자동 배출 (신규 기능)
+
+```
+POST /dispenser/rfid-auto-dispense
+  → Body: { k_uid: string, machine_id: string }
+  → RFID 태그 인식 시 자동으로 오늘 스케줄 조회 + 약 배출
+  → UID 검증 + 스케줄 조회 + 배출 지시를 하나의 API로 통합
+```
+
+#### 2. 기기 상태 조회
+
+```
+GET /dispenser/machine-status?machine_id=<id>
+GET /dispenser/status/{machine_id}
+  → 기기 정보 조회 (두 가지 경로 모두 지원)
+```
+
+#### 3. 배출 목록 조회
+
+```
+GET /dispenser/dispense-list?machine_id=<id>&userId=<id>
+  → 특정 사용자의 배출 목록
+```
+
+#### 4. 슬롯 상태 조회
+
+```
+GET /dispenser/slot-status?machine_id=<id>
+  → 슬롯별 약품 정보 및 잔량 확인
+```
+
+#### 5. 기기별 사용자 목록
+
+```
+GET /dispenser/users/by-machine?machine_id=<id>
+  → 해당 기기에 연결된 사용자 목록
+```
+
+#### 6. 기기별 스케줄 조회
+
+```
+GET /dispenser/schedules-by-date?machine_id=<id>&date=YYYY-MM-DD
+  → 특정 날짜의 스케줄
+```
+
+---
+
+## 마이그레이션 가이드
+
+### 현재 클라이언트 코드 유지 (권장)
+
+**변경 필요 사항**: `config/.env`의 서버 주소만 수정
+
+```bash
+# 기존 (Mock 서버)
+TDB_SERVER_BASE_URL=http://localhost:8000
+
+# 신규 (통합 서버)
+TDB_SERVER_BASE_URL=http://your-server-ip:3000
+```
+
+기존 `/machine`, `/rfid`, `/queue`, `/dispense` API는 호환성이 유지됩니다.
+
+### 향후 `/dispenser` API 전환 (선택사항)
+
+서버 문서(`RASPBERRY_PI_SETUP.md`, `API_CHANGES.md`)에서 안내하는 새로운 API:
+- `/dispenser/verify-uid` (← `/rfid/resolve` 대체)
+- `/dispenser/dispense-list` (← `/queue/build` 대체)
+- `/dispenser/dispense-result` (← `/dispense/report` 대체)
+- `/dispenser/confirm` (새로운 복용 완료 확인 API)
+
+**주의**: 일부 엔드포인트는 구현 진행 중일 수 있습니다. 프로덕션에서는 기존 API 사용을 권장합니다.
 
 ## 서버 모듈 구조
 
 ```
 src/
-├── auth/           # JWT 인증
+├── auth/           # JWT 인증 (모바일 앱용)
 ├── users/          # 사용자 관리
 ├── family/         # 가족/그룹 관리
 ├── device/         # 모바일 앱 기기
-├── machine/        # 디스펜서 기기 (★ Pi 클라이언트 통신)
-├── rfid/           # RFID 태그 (★)
-├── queue/          # 배출 큐 생성 (★)
-├── dispense/       # 배출 기록 (★)
+├── dispenser/      # ★★ 라즈베리파이 통합 모듈 (신규)
+├── machine/        # ★ 디스펜서 기기 (기존 API)
+├── rfid/           # ★ RFID 태그 (기존 API)
+├── queue/          # ★ 배출 큐 생성 (기존 API)
+├── dispense/       # ★ 배출 기록 (기존 API)
 ├── dose-history/   # 복약 이력
 ├── medicine/       # 의약품 정보
 ├── supplement/     # 건강기능식품
@@ -673,20 +924,36 @@ src/
 └── entities/       # 공통 엔티티
 ```
 
-★ 표시 모듈은 Pi 클라이언트(`hwserial/serial_reader.py`)와 직접 통신
+**★ 표시**: 기존 Pi 클라이언트 API (호환성 유지)
+**★★ 표시**: 신규 통합 API (`/dispenser/*` 경로)
 
 ## 인증 및 보안
 
-**현재 상태 (2025년 기준)**:
-- 대부분의 기기 관련 API에서 `@UseGuards(AccessTokenGuard)` **주석 처리됨**
-- RFID resolve, queue build, dispense report 모두 **인증 없이 접근 가능**
-- 개발/테스트 편의를 위해 인증 비활성화 상태
+**이중 인증 구조 (2025년 기준)**:
 
-**향후 변경 시 대응 방안**:
-서버에서 인증을 활성화할 경우, 클라이언트 수정 필요:
-1. 기기 등록 시 JWT 토큰 발급 받기
+| 클라이언트 | 인증 방식 | 설명 |
+|----------|----------|------|
+| **모바일 앱** | JWT Bearer Token | 사용자 로그인 필수 |
+| **라즈베리파이** | 인증 없음 | RFID UID 기반, IP 보안 권장 |
+
+**기존 API (`/machine`, `/rfid`, `/queue`, `/dispense`)**:
+- 현재 대부분의 기기 API에서 `@UseGuards` 주석 처리
+- 라즈베리파이 클라이언트는 **인증 없이 호출 가능**
+
+**신규 API (`/dispenser/*`)**:
+- 컨트롤러에 `@UseGuards(AccessTokenGuard)` 설정됨
+- 실제 활성화 여부는 서버 구성에 따라 다름
+
+**보안 권장사항**:
+1. **프로덕션**: 라즈베리파이 IP를 화이트리스트에 등록
+2. **방화벽**: `/dispenser` 경로에 접근 제어 적용
+3. **HTTPS**: 반드시 TLS/SSL 사용 (HTTP는 개발 환경에서만)
+
+**향후 인증 활성화 시 대응**:
+서버에서 JWT 인증을 활성화할 경우:
+1. 기기 등록 시 토큰 발급 API 호출
 2. `services/api_client.py`의 `_session`에 `Authorization: Bearer <token>` 헤더 추가
-3. 토큰 만료 시 자동 재발급 로직 구현 (`/auth/refresh` 등)
+3. 토큰 만료 시 자동 재발급 로직 구현 (`/auth/refresh`)
 
 ## 데이터 흐름
 
@@ -719,19 +986,67 @@ src/
 
 ## 로컬 테스트
 
-**Mock 서버 (`dev/mock_server.py`)**:
-- FastAPI 기반 간단한 테스트용 서버
-- 실제 NestJS 서버보다 응답이 간소화됨
-- **개발 초기 단계에서만 사용 권장**
-- 프로덕션/실전 테스트에서는 반드시 실제 서버 사용
+### Mock 서버 (개발 초기용)
 
-**실제 NestJS 서버 실행**:
+클라이언트 저장소의 `dev/mock_server.py`:
+- FastAPI 기반 간단한 테스트 서버
+- 실제 서버와 응답 형식이 다름
+- **개발 초기 단계에서만 사용**
+
+```bash
+cd dev
+uvicorn mock_server:app --reload --port 8000
+```
+
+### 실제 NestJS 서버 실행
+
 ```bash
 cd TDB_Server/TDB_Server
+
+# 의존성 설치
 npm install
-npm run start:dev     # 개발 모드 (hot reload)
-npm run start:prod    # 프로덕션 모드
+
+# 환경 변수 설정
+cp .env.example .env
+# .env 파일 편집 (MySQL 연결 정보 등)
+
+# 개발 모드 (hot reload)
+npm run start:dev
+
+# 프로덕션 빌드 및 실행
+npm run build
+npm run start:prod
 ```
+
+### Docker Compose (권장)
+
+서버 + MySQL + phpMyAdmin 통합 스택:
+
+```bash
+cd TDB_Server/TDB_Server
+
+# 컨테이너 실행
+docker-compose up -d
+
+# 로그 확인
+docker-compose logs -f
+
+# 중지
+docker-compose down
+```
+
+**접속 정보**:
+- 서버: http://localhost:3000
+- phpMyAdmin: http://localhost:8080 (데이터베이스 관리)
+
+### AWS 클라우드 배포
+
+서버 저장소에 자동화 스크립트가 제공됩니다:
+- `deploy-ec2.sh`: EC2 인스턴스 자동 배포
+- `setup-rds.sh`: RDS MySQL 설정
+- `ecosystem.config.js`: PM2 프로세스 관리
+
+상세 가이드: 서버 저장소의 `EC2_RDS_SETUP.md` 참조
 
 ## 환경 변수 설정
 
