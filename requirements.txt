@@ -1,0 +1,13 @@
+# --- Core (Pi 클라이언트: Arduino 시리얼 + 서버 호출) ---
+pyserial>=3.5,<4.0
+requests>=2.31,<3.0
+
+# --- Mock 서버(로컬 E2E 테스트용 FastAPI) ---
+fastapi>=0.100,<1.0
+uvicorn>=0.22,<1.0
+
+# --- 선택(있으면 편한 것들) ---
+# python-dotenv>=1.0,<2.0   # .env 쓰고 싶을 때만
+
+qrcode[pil]
+Pillow

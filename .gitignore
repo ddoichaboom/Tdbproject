@@ -1,0 +1,6 @@
+.venv/
+config/.env
+logs/
+__pycache__/
+.pio/
+.vscode/

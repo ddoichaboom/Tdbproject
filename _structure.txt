@@ -1,0 +1,65 @@
+/home/tdb/Tdbproject
+├── .gitignore
+├── .vscode
+│   └── tasks.json
+├── _structure.txt
+├── config
+│   ├── .env
+│   ├── __init__.py
+│   └── settings.py
+├── data
+│   ├── offline_reports.jsonl
+│   └── state.json
+├── dev
+│   └── mock_server.py
+├── firmware
+│   ├── .gitignore
+│   ├── .vscode
+│   │   ├── c_cpp_properties.json
+│   │   ├── extensions.json
+│   │   └── launch.json
+│   ├── include
+│   │   ├── Define.hpp
+│   │   ├── README
+│   │   ├── globals.hpp
+│   │   ├── hardware.hpp
+│   │   ├── pins.hpp
+│   │   └── servos.hpp
+│   ├── lib
+│   │   └── README
+│   ├── platformio.ini
+│   ├── src
+│   │   ├── globals.cpp
+│   │   ├── hardware.cpp
+│   │   ├── main.cpp
+│   │   ├── pins.cpp
+│   │   ├── rfid.cpp
+│   │   ├── servos.cpp
+│   │   └── test_code.cpp
+│   └── test
+│       └── README
+├── gui
+│   ├── qr_display.py
+│   ├── screens
+│   └── screens__init__.py
+├── gui__init__.py
+├── hwserial
+│   ├── arduino_link.py
+│   ├── serial_reader.py
+│   └── serial_reader.py.bak
+├── logs
+│   ├── .gitkeep
+│   └── serial_reader.log
+├── main.py
+├── requirements.txt
+├── rfid
+├── rfid__init__.py
+├── scripts
+│   └── recovery_jog.py
+├── serial__init__.py
+├── services
+│   ├── api_client.py
+│   └── api_client.py.bak
+└── services__init__.py
+
+18 directories, 45 files

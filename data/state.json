@@ -1,0 +1,12 @@
+{
+  "status": "done",
+  "last_uid": "6CEFECBF",
+  "phase": null,
+  "progress": {
+    "morning": true,
+    "afternoon": true,
+    "evening": true
+  },
+  "error": null,
+  "ts": 1762866362.841366
+}

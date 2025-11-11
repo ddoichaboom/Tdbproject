@@ -1,0 +1,331 @@
+import os
+import time
+import logging
+from logging.handlers import RotatingFileHandler
+import requests
+import json
+from pathlib import Path
+from config import settings
+from datetime import datetime
+
+
+# 시리얼 헬퍼
+from hwserial.arduino_link import (
+    open_serial, 
+    read_uid_once, 
+    dispense, 
+    step_next, 
+    step_home, 
+    step_next_n
+)
+
+# 하트비트
+from services.api_client import (
+    check_machine_registered,
+    resolve_uid,
+    build_queue,
+    report_dispense,
+    heartbeat,
+
+)
+
+# 세션 락 & 키트 고정
+_session_user_id = None
+_active_kit_uid = None
+
+# ---------------------------
+# 중복 UID 쿨다운용 상태
+# ---------------------------
+_last_uid = None
+_last_ts  = 0.0
+
+# ---------------------------
+# 로깅 설정
+# ---------------------------
+os.makedirs("logs", exist_ok=True)
+logger = logging.getLogger("serial_reader")
+logger.setLevel(logging.INFO)
+handler = RotatingFileHandler("logs/serial_reader.log", maxBytes=2_000_000, backupCount=3)
+fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+handler.setFormatter(fmt)
+logger.addHandler(handler)
+
+def logi(msg): print(msg); logger.info(msg)
+def loge(msg): print(msg); logger.error(msg)
+
+# ---------------------------
+# 오프라인 적치 & 상태 파일
+# ---------------------------
+STATE_PATH   = Path("data/state.json")
+OFFLINE_PATH = Path("data/offline_reports.jsonl")
+STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+OFFLINE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def write_state(status: str, **kwargs):
+    state = {
+        "status": status,
+        "last_uid": kwargs.get("last_uid"),
+        "phase": kwargs.get("phase"),
+        "progress": kwargs.get("progress", {}),
+        "error": kwargs.get("error"),
+        "ts": time.time(),
+    }
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(STATE_PATH)
+
+def store_offline(payload: dict):
+    """서버 전송 실패 시 JSONL로 1줄 적치."""
+    with OFFLINE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    logger.info(f"[OFFLINE] stored -> {payload.get('time')} items={len(payload.get('items', []))}")
+
+
+def flush_offline() -> int:
+    """적치분 재전송. 성공 건수 반환."""
+    if not OFFLINE_PATH.exists():
+        return 0
+    sent = 0
+    keep: list[str] = []
+    url = settings.SERVER_BASE_URL.rstrip("/") + "/dispense/report"
+    with OFFLINE_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+                r = requests.post(url, json=payload, timeout=5)
+                r.raise_for_status()
+                sent += 1
+            except Exception:
+                keep.append(line)
+    with OFFLINE_PATH.open("w", encoding="utf-8") as f:
+        for line in keep:
+            f.write(line + "\n")
+    return sent
+
+
+# ---------------------------
+# 큐 처리 (아침→점심→저녁)
+# ---------------------------
+def process_queue(base_url: str, machine_id: str, user_id: str, queue: list, ser):
+    # 실행할 시간대만 추림
+    phases = [p for p in queue if p.get("items")]
+    total = len(phases)
+    if total == 0:
+        logi("[INFO] 실행할 시간대 없음")
+        return True, {"morning": False, "afternoon": False, "evening": False}
+
+    # 진행현황 & 스테이지
+    progress = {"morning": False, "afternoon": False, "evening": False}
+    stage = 0
+    all_day_ok = True
+
+    for idx, phase in enumerate(phases):
+        time_key = phase["time"]
+        items = phase["items"]
+        logi(f"[RUN] {time_key} items={items}")
+
+        # 배출
+        phase_ok = True
+        for it in items:
+            slot  = int(it["slot"])
+            count = int(it["count"])
+            if settings.DRY_RUN:
+                logi(f"[DRY] DISPENSE slot={slot} count={count}")
+                ok, msg = True, "OK,DRY"
+            else:
+                ok, msg = dispense(ser, slot, count)
+            logi(f"  -> {msg}")
+
+            if not ok:
+                if not settings.DRY_RUN:
+                    ok2, msg2 = dispense(ser, slot, count)
+                    logi(f"  (retry)-> {msg2}")
+                    if not ok2:
+                        phase_ok = False
+                else:
+                    phase_ok = False
+
+        # 단계 이동
+        is_last = (idx == total - 1)
+        if is_last:
+            if settings.DRY_RUN:
+                logi("[DRY] HOME")
+                stage = 0
+            else:
+                ok_step, msg_step = step_home(ser)
+                logi(f"  HOME: {msg_step}")
+                stage = 0
+        else:
+            next_idx = idx + 1
+            target_stage = next_idx + 1
+            need = target_stage - stage
+            if need > 0:
+                if settings.DRY_RUN:
+                    logi(f"[DRY] STEP_NEXT x{need} (stage {stage}->{target_stage})")
+                    stage = target_stage
+                else:
+                    ok_step, msg_step = step_next_n(ser, need)
+                    logi(f"  STEP: {msg_step} (stage {stage}->{target_stage})")
+                    if ok_step:
+                        stage = target_stage
+                    else:
+                        phase_ok = False
+
+        # 서버 리포트
+        payload_items = [{"medi_id": it.get("medi_id"), "count": int(it["count"])} for it in items]
+        rep = report_dispense(machine_id, user_id, time_key, payload_items,
+                              "completed" if phase_ok else "partial")
+        logi(f"[REPORT] {rep}")
+
+        # 진행현황 갱신 + GUI 반영(선택)
+        progress[time_key] = phase_ok
+        write_state(status="dispensing", last_uid=_active_kit_uid, phase=time_key, progress=progress)
+
+        if not phase_ok:
+            all_day_ok = False
+
+    return all_day_ok, progress
+
+def _weekday_key_now() -> str:
+    # 월=0..일=6 → "mon".."sun"
+    return ["mon","tue","wed","thu","fri","sat","sun"][datetime.now().weekday()]
+
+
+# ---------------------------
+# 메인 루프
+# ---------------------------
+def main():
+    global _session_user_id, _active_kit_uid, _last_uid, _last_ts
+    global _session_user_id, _active_kit_uid
+
+    base = settings.SERVER_BASE_URL.rstrip("/")
+    machine_id = settings.MACHINE_ID
+
+    # --- (A) 등록될 때까지 대기 ---
+    while True:
+        registered = check_machine_registered(machine_id)
+        if registered:
+            write_state(status="waiting_uid")  # 등록 완료되면 대기 화면
+            break
+        # 미등록 상태 → 기기 등록 QR 표시
+        write_state(status="machine_not_registered", last_uid=settings.DEVICE_UID)
+        time.sleep(5)  # 5초마다 재확인
+
+    # 1) 시리얼 열기
+    try:
+        ser = open_serial()
+    except Exception as e:
+        loge(f"[ERR] Serial open failed: {e}")
+        return
+
+    with ser:
+        logi("[INFO] Serial ready. Waiting UID...")
+        write_state(status="waiting_uid")
+        last_hb = time.monotonic() - settings.HEARTBEAT_SEC
+    
+        while True:
+            try:
+                now = time.monotonic()
+    
+                # 0) HEARTBEAT + OFFLINE FLUSH
+                if settings.HEARTBEAT_SEC > 0 and (now - last_hb > settings.HEARTBEAT_SEC):
+                    try:
+                        heartbeat(machine_id)
+                        sent = flush_offline()
+                        if sent:
+                            logi(f"[OFFLINE] flushed {sent} report(s)")
+                    except Exception as e:
+                        loge(f"[HB] failed: {e}")
+                    last_hb = now
+    
+                # 1) UID 대기
+                uid = read_uid_once(ser)
+                if not uid:
+                    continue
+    
+
+                if uid == _last_uid and (now - _last_ts) < settings.UID_COOLDOWN_SEC:
+                    continue
+                _last_uid, _last_ts = uid, now
+    
+
+                # === 엄격 모드: 세션 중엔 어떤 UID도 처리하지 않음 ===
+                if _session_user_id is not None:
+                    if _active_kit_uid and uid != _active_kit_uid:
+                        loge(f"[LOCK] KIT SWAP attempt during dispensing: active={_active_kit_uid}, new={uid} -> ignored")
+                        # (선택) state.json에 안내 상태 반영 가능
+                    # 같든 다르든 세션 중엔 그냥 무시
+                    continue
+
+                logi(f"[UID] {uid}")
+                write_state(status="resolving_uid", last_uid=uid)
+    
+                # 3) UID → 사용자
+                res = resolve_uid(uid)
+                if not res:
+                    write_state(status="error", last_uid=uid, error="resolve_uid failed")
+                    continue
+    
+                if not res.get("registered"):
+                    logi(f"[ACTION] KIT_NOT_REGISTERED → UID={uid} QR 표시 필요")
+                    write_state(status="kit_not_registered", last_uid=uid)
+                    continue
+    
+                user_id = str(res.get("user_id"))
+                took_today = int(res.get("took_today", 0))
+                logi(f"[OK] user={user_id}, took_today={took_today}")
+                if took_today == 1:
+                    logi("[INFO] 이미 오늘 수령 완료")
+                    write_state(status="done", last_uid=uid, progress={"morning":True,"afternoon":True,"evening":True})
+                    continue
+    
+                # 4) 큐 생성
+                wk = _weekday_key_now()
+                q = build_queue(machine_id, user_id, weekday=wk)
+                if q.get("status") != "ok":
+                    loge(f"[ERR] queue build failed: {q}")
+                    write_state(status="error", last_uid=uid, error="queue build failed")
+                    continue
+    
+                queue = q.get("queue", [])
+                if not queue:
+                    logi("[INFO] 오늘 남은 아이템 없음")
+                    write_state(status="done", last_uid=uid, progress={"morning":True,"afternoon":True,"evening":True})
+                    continue
+    
+                write_state(status="queue_ready", last_uid=uid)
+
+                # === 세션 잠금 (시작) ===
+                _session_user_id = user_id
+                _active_kit_uid  = uid
+
+                try:
+                    # (선택) 초기 진행현황 표시
+                    init_progress = {"morning": False, "afternoon": False, "evening": False}
+                    write_state(status="dispensing", last_uid=uid, progress=init_progress)
+
+                    # 5) 큐 실행
+                    all_ok, progress = process_queue(base, machine_id, user_id, queue, ser)
+
+                    write_state(status="done", last_uid=uid, progress=progress)
+
+                finally:
+                    # === 세션 해제 (종료) ===
+                    _session_user_id = None
+                    _active_kit_uid  = None
+
+    
+            except KeyboardInterrupt:
+                logi("Bye.")
+                break
+            except Exception as e:
+                loge(f"[ERR] Loop error: {e}")
+                write_state(status="error", error=str(e))
+                time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
