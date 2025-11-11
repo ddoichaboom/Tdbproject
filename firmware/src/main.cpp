@@ -99,6 +99,55 @@ static void handleSerialCommand() {
         servoStepNext();
         Serial.println("OK,STEP,NEXT");
       }
+      // -----------------------------
+      // 4) TEST_SOLENOID,<slot>,<type>
+      //    slot: 1,2,3  type: L(loading), D(dispensing), B(both)
+      // -----------------------------
+      else if (buf.startsWith("TEST_SOLENOID")) {
+        int c1 = buf.indexOf(',');
+        int c2 = buf.indexOf(',', c1 + 1);
+        if (c1 < 0 || c2 < 0) {
+          Serial.println("ERR,BAD_ARGS,TEST_SOLENOID");
+          buf = "";
+          continue;
+        }
+        int slot = buf.substring(c1 + 1, c2).toInt();
+        char type = toupper(buf.substring(c2 + 1).charAt(0));
+
+        // 유효성 검증
+        if (slot < 1 || slot > 3) {
+          Serial.print("ERR,INVALID_SLOT,"); Serial.println(slot);
+          buf = "";
+          continue;
+        }
+        if (type != 'L' && type != 'D' && type != 'B') {
+          Serial.print("ERR,INVALID_TYPE,"); Serial.println(type);
+          buf = "";
+          continue;
+        }
+
+        int idx = slot - 1;
+
+        // 테스트 실행
+        if (type == 'L' || type == 'B') {
+          Serial.print("TESTING_LOADING,"); Serial.println(slot);
+          digitalWrite(LOADING_SOLENOID_PINS[idx], LOW);
+          delay(1000);
+          digitalWrite(LOADING_SOLENOID_PINS[idx], HIGH);
+          delay(500);
+        }
+
+        if (type == 'D' || type == 'B') {
+          Serial.print("TESTING_DISPENSING,"); Serial.println(slot);
+          digitalWrite(DISPENSING_SOLENOID_PINS[idx], LOW);
+          delay(1000);
+          digitalWrite(DISPENSING_SOLENOID_PINS[idx], HIGH);
+          delay(500);
+        }
+
+        Serial.print("OK,TEST_SOLENOID,"); Serial.print(slot);
+        Serial.print(","); Serial.println(type);
+      }
             // ...기존 else if들 위/아래 아무데나...
       else if (buf.startsWith("JOG")) {
         int c1 = buf.indexOf(',');
