@@ -32,6 +32,6 @@ BAUDRATE     = int(_env("BAUDRATE", "9600"))
 READ_TIMEOUT = float(_env("READ_TIMEOUT", "1.0"))
 
 # 동작 옵션
-DRY_RUN          = _env("DRY_RUN", "false").lower() in ("1","true","yes","y","on")
+DRY_RUN = False
 UID_COOLDOWN_SEC = float(_env("UID_COOLDOWN_SEC", "2.0"))
 HEARTBEAT_SEC    = int(_env("HEARTBEAT_SEC", "300"))
