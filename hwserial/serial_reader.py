@@ -217,11 +217,15 @@ def process_queue(machine_id: str, user_id: str, phases: list, ser, adapter=None
                     if ok2:
                         phase_ok = True
 
-            time.sleep(0.5)
+            time.sleep(0.1)
 
-        # 3) 시간대별 서버 리포트
+        # 3) 시간대별 서버 리포트 (slot 정보 포함)
         payload_items = [
-            {"medi_id": it.get("medi_id"), "count": int(it.get("count", 1))}
+            {
+                "medi_id": it.get("medi_id"),
+                "slot": int(it.get("slot", 1)),
+                "count": int(it.get("count", 1))
+            }
             for it in items if it.get("medi_id")
         ]
 
