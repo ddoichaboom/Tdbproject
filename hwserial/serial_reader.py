@@ -78,6 +78,72 @@ def _time_bucket_now() -> str:
         return "afternoon"
     return "evening"
 
+def get_current_time_slot() -> tuple:
+    """
+    현재 시간대 판별 및 배출 가능 여부 확인
+
+    Returns:
+        (time_slot, message)
+        - time_slot: "morning" | "afternoon" | "evening" | None
+        - message: 사용자 안내 메시지
+
+    시간대:
+        - 아침: 06:00 ~ 12:00
+        - 점심: 12:00 ~ 18:00
+        - 저녁: 18:00 ~ 00:00 (24:00)
+        - 불가: 00:00 ~ 06:00
+    """
+    h = datetime.now().hour
+
+    # 아침: 06:00 ~ 12:00
+    if 6 <= h < 12:
+        return "morning", "아침 배출 시간입니다"
+
+    # 점심: 12:00 ~ 18:00
+    elif 12 <= h < 18:
+        return "afternoon", "점심 배출 시간입니다"
+
+    # 저녁: 18:00 ~ 00:00 (24:00)
+    elif 18 <= h < 24:
+        return "evening", "저녁 배출 시간입니다"
+
+    # 배출 불가: 00:00 ~ 06:00
+    else:
+        return None, "약물 복용 시간대가 아닙니다 (배출 가능 시간: 06:00~24:00)"
+
+def filter_phases_by_time(phases: list, current_slot: str) -> list:
+    """
+    현재 시간대에 따라 배출할 시간대 필터링
+
+    Args:
+        phases: 서버에서 받은 전체 큐 [{"time": "morning", "items": [...]}, ...]
+        current_slot: 현재 시간대 ("morning" | "afternoon" | "evening")
+
+    Returns:
+        필터링된 phases 리스트
+
+    배출 규칙:
+        - 아침(06:00~12:00): morning, afternoon, evening 모두 배출
+        - 점심(12:00~18:00): afternoon, evening 배출
+        - 저녁(18:00~00:00): evening만 배출
+    """
+    if current_slot == "morning":
+        # 아침 시간대 → 모든 시간대 배출
+        allowed = ["morning", "afternoon", "evening"]
+    elif current_slot == "afternoon":
+        # 점심 시간대 → 점심, 저녁 배출
+        allowed = ["afternoon", "evening"]
+    elif current_slot == "evening":
+        # 저녁 시간대 → 저녁만 배출
+        allowed = ["evening"]
+    else:
+        # 배출 불가 시간대
+        return []
+
+    # 허용된 시간대만 필터링
+    filtered = [p for p in phases if p.get("time") in allowed]
+    return filtered
+
 def _stage_for_time_key(time_key: str) -> int:
     """
     물리 맵:
@@ -367,18 +433,43 @@ def main(adapter=None):
 
                 logi(f"[OK] user={user_id}, took_today={took_today}")
 
-                # 이미 오늘 복용했는지 확인
-                if took_today == 1:
-                    logi("[INFO] 이미 오늘 수령 완료")
-                    write_state(status="done", last_uid=uid)
+                # ===== 1) 현재 시간대 확인 =====
+                current_slot, time_message = get_current_time_slot()
+
+                if current_slot is None:
+                    # 배출 불가 시간대 (00:00~06:00)
+                    logi(f"[REJECT] 배출 불가 시간대: {datetime.now().hour}시")
+                    write_state(status="out_of_time", last_uid=uid)
                     if adapter:
-                        adapter.notify_status_update(3, "오늘 이미 복용하셨습니다")
+                        adapter.notify_status_update(3, time_message)
+                        adapter.notify_error(time_message)
                     time.sleep(3)
                     if adapter:
                         adapter.notify_waiting()
                     continue
 
-                # user_id로 user_name 찾기
+                # ===== 2) took_today 확인 (이미 복용 완료) =====
+                if took_today == 1:
+                    logi(f"[INFO] 이미 오늘 복용 완료 (user={user_id})")
+                    write_state(status="already_taken", last_uid=uid)
+
+                    # user_name 찾기
+                    users = get_users_for_machine(machine_id)
+                    user_name = "알 수 없는 사용자"
+                    if users:
+                        for user in users:
+                            if str(user.get("user_id")) == user_id:
+                                user_name = user.get("name")
+                                break
+
+                    if adapter:
+                        adapter.notify_status_update(3, f"오늘 이미 복용하셨습니다 ({user_name}님)")
+                    time.sleep(3)
+                    if adapter:
+                        adapter.notify_waiting()
+                    continue
+
+                # ===== 3) user_name 찾기 =====
                 users = get_users_for_machine(machine_id)
                 user_name = "알 수 없는 사용자"
                 if users:
@@ -386,9 +477,11 @@ def main(adapter=None):
                         if str(user.get("user_id")) == user_id:
                             user_name = user.get("name")
                             break
-                
+
+                # ===== 4) 스케줄 조회 =====
+                logi(f"[SCHEDULE] 현재 시간대: {current_slot} ({datetime.now().hour}시)")
                 if adapter:
-                    adapter.notify_status_update(3, f"{user_name}님 스케줄 조회 중...")
+                    adapter.notify_status_update(3, f"{user_name}님 스케줄 조회 중... ({time_message})")
 
                 _session_user_id = user_id
                 _active_kit_uid = uid
@@ -396,10 +489,10 @@ def main(adapter=None):
                 # build_queue 호출 (서버가 시간대별로 그룹화된 큐 반환)
                 queue_response = build_queue(machine_id, user_id)
                 if not queue_response:
-                    loge(f"[ERR] no queue for user {user_id}")
+                    loge(f"[ERR] 서버 응답 없음 (user={user_id})")
                     if adapter:
                         adapter.notify_waiting()
-                        adapter.notify_error("스케줄이 없습니다.")
+                        adapter.notify_error("서버 연결 오류")
                     time.sleep(3)
                     _session_user_id = _active_kit_uid = None
                     continue
@@ -417,23 +510,48 @@ def main(adapter=None):
                     if adapter: adapter.notify_waiting()
                     continue
 
-                # phases가 비어있는지 확인
-                if not phases or all(not p.get("items") for p in phases):
-                    logi("[INFO] No items to dispense for this schedule")
-                    if adapter: adapter.notify_status_update(3, "배출할 약이 없습니다.")
+                # ===== 5) 현재 시간대에 맞게 필터링 =====
+                filtered_phases = filter_phases_by_time(phases, current_slot)
+                logi(f"[FILTER] 전체={len(phases)}, 필터링 후={len(filtered_phases)}, 시간대={current_slot}")
+
+                # ===== 6) 필터링 후 비어있는지 확인 =====
+                if not filtered_phases or all(not p.get("items") for p in filtered_phases):
+                    logi(f"[INFO] 현재 시간대({current_slot})에 배출할 약이 없음")
+                    write_state(status="no_schedule", last_uid=uid)
+
+                    # 원래 phases에는 있었는지 확인
+                    has_any_schedule = any(p.get("items") for p in phases)
+
+                    if has_any_schedule:
+                        # 스케줄은 있지만 현재 시간대가 지나서 배출할 수 없음
+                        msg = f"현재 시간대({current_slot})에 배출할 약이 없습니다"
+                        logi(f"[INFO] {msg}")
+                    else:
+                        # 아예 스케줄이 없음
+                        msg = "오늘 배출할 스케줄이 없습니다"
+                        logi(f"[INFO] {msg}")
+
+                    if adapter:
+                        adapter.notify_status_update(3, msg)
+
                     time.sleep(3)
                     _session_user_id = _active_kit_uid = None
-                    if adapter: adapter.notify_waiting()
+                    if adapter:
+                        adapter.notify_waiting()
                     continue
 
                 # ★★★ process_queue 호출 (시간대별 회전판 이동 + 배출) ★★★
-                write_state(status="queue_ready", last_uid=uid, phase="morning")
-                logi(f"[QUEUE] Starting dispense process for {user_name}")
+                # 필터링된 시간대 목록
+                filtered_times = [p.get("time") for p in filtered_phases if p.get("items")]
+                first_phase = filtered_phases[0].get("time") if filtered_phases else "morning"
+
+                write_state(status="queue_ready", last_uid=uid, phase=first_phase)
+                logi(f"[QUEUE] 배출 시작: {user_name}님 - {filtered_times}")
                 if adapter:
-                    adapter.notify_status_update(3, f"{user_name}님 약 배출 시작...")
+                    adapter.notify_status_update(3, f"{user_name}님 약 배출 시작... ({', '.join(filtered_times)})")
 
                 progress = {}  # 예외 발생 시에도 안전하도록 초기화
-                all_success, progress = process_queue(machine_id, user_id, phases, ser, adapter)
+                all_success, progress = process_queue(machine_id, user_id, filtered_phases, ser, adapter)
 
                 if all_success:
                     logi("[OK] Dispense completed successfully")
