@@ -7,6 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 TDB Dispenser is a medication dispensing system consisting of:
 - **Raspberry Pi client** (Python): Reads RFID cards, communicates with backend server, controls Arduino via serial
 - **Arduino Mega firmware** (C++/PlatformIO): Controls servos, RFID reader (MFRC522), and dispenses medication
+- **Dashboard GUI** (Tkinter): Modern 2x3 tile dashboard for real-time status monitoring and QR code display
+- **NestJS Server** (TypeScript): Production backend with MySQL database (cloned locally in `tdb_server/`)
 - **Mock server** (FastAPI): Local testing server simulating backend API
 
 The system dispenses medication in three time slots (morning/afternoon/evening) by rotating a carousel mechanism using servo motors.
@@ -31,13 +33,15 @@ pio device monitor   # Monitor serial output
 ### Running the System
 
 ```bash
-# Run main dispenser application (requires Arduino connected)
-python hwserial/serial_reader.py
+# Option 1: Run integrated system (GUI + Serial Reader)
+python main.py                    # Production mode (fullscreen)
+python main.py --demo             # Demo mode (windowed, simulated events)
 
-# Run GUI (displays QR codes and status)
-python gui/qr_display.py
+# Option 2: Run components separately (legacy mode)
+python hwserial/serial_reader.py  # Serial reader only (requires Arduino)
+python gui/qr_display.py          # Simple QR display GUI
 
-# Run mock server for local testing
+# Run mock server for local testing (development only)
 cd dev
 uvicorn mock_server:app --reload --port 8000
 ```
@@ -62,11 +66,21 @@ pio device monitor
 ### Data Flow
 
 ```
-RFID Card → Arduino → Serial → Pi (serial_reader.py) → Backend API
+RFID Card → Arduino → Serial → Pi (serial_reader.py) → Backend API (NestJS/MySQL)
                                 ↓
                            State File (data/state.json)
                                 ↓
-                           GUI (qr_display.py)
+                     ┌──────────┴──────────┐
+                     ↓                     ↓
+            GUI (qr_display.py)    Dashboard (gui_app.py)
+            (Simple QR Display)    (2x3 Tile Dashboard)
+```
+
+**Integrated Mode (main.py)**:
+```
+RFID Card → Arduino → Serial → serial_reader_adapter → Dashboard GUI (gui_app.py)
+                                         ↓
+                                   Backend API (NestJS/MySQL)
 ```
 
 ### Key Components
@@ -100,6 +114,31 @@ RFID Card → Arduino → Serial → Pi (serial_reader.py) → Backend API
 - Reads MFRC522 RFID tags, prints UID to serial
 - Processes commands: `DISPENSE,<slot>,<count>`, `STEP,NEXT`, `HOME`, `JOG,<dir>,<ms>`
 - Controls servos via `servos.hpp` (timing: morning=0ms, afternoon=2000ms, evening=4500ms)
+
+**gui/gui_app.py** - Dashboard GUI (NEW)
+- Modern 2x3 tile layout with dark theme
+- Real-time status display (time, inventory, users, schedule, status, device ID)
+- Popup overlay system for alerts and QR codes
+- Thread-safe UI updates via `ui_call()` method
+- Fullscreen support for Raspberry Pi touchscreen
+
+**gui/qr_display.py** - Simple QR display GUI (Legacy)
+- Lightweight QR code display for registration
+- Polls `data/state.json` every 500ms
+- Status text display for basic states
+- Used when running components separately
+
+**hwserial/serial_reader_adapter.py** - GUI adapter (NEW)
+- Bridges serial_reader and GUI components
+- Event-driven callbacks: `on_waiting`, `on_uid`, `on_error`, `on_unregistered`
+- UID debouncing (1 second cooldown)
+- Demo mode for testing without hardware
+
+**main.py** - Integrated application bootstrap (NEW)
+- Combines Dashboard GUI + Serial Reader in one process
+- Command-line flags: `--demo` for simulation mode
+- Event callback wiring between adapter and GUI
+- Production-ready entry point for systemd service
 
 ### Carousel Positioning Logic
 
@@ -162,13 +201,94 @@ Arduino sends unsolicited RFID UIDs as uppercase hex strings (e.g., `6CEFECBF`).
 
 ---
 
+## 📊 Database Schema
+
+The production database is fully documented in `DATABASE.md`. Key highlights:
+
+**Database Host**: AWS RDS MySQL 8.0.42 at `tdb.cxc48q26c73q.ap-southeast-2.rds.amazonaws.com`
+
+**Core Tables**:
+- `users` - User accounts with RFID card mapping (`k_uid` field)
+- `user_group` - Family groups that share a dispenser
+- `user_group_membership` - Many-to-many user-group relationships
+- `machine` - Physical dispenser devices
+- `machine_slot` - Slot assignments (slot 1-3) with inventory tracking
+- `medicine` - Medicine catalog with prescriptions and supplements
+- `schedule` - Weekly recurring schedules (day_of_week + time_of_day)
+- `dose_history` - Complete audit trail of all dispensing events
+
+**Local Database Dumps**: SQL schema exports are available in `DBstructure/` directory.
+
+For complete schema documentation, ER diagrams, and sample queries, see `DATABASE.md`.
+
+---
+
+## 🖥️ Backend Server (Local Clone)
+
+The TDB NestJS server has been cloned locally in `tdb_server/TDB_Server/`.
+
+**Quick Start**:
+```bash
+cd tdb_server/TDB_Server
+
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env  # Edit with MySQL credentials
+
+# Run development server
+npm run start:dev
+```
+
+**Documentation**:
+- Server architecture: `tdb_server/INIT.md`
+- API changes for Pi: `tdb_server/TDB_Server/API_CHANGES.md`
+- Pi setup guide: `tdb_server/TDB_Server/RASPBERRY_PI_SETUP.md`
+
+**Production Server**:
+- The production instance runs on AWS EC2 with RDS MySQL
+- Connection details in `config/.env` (`TDB_SERVER_BASE_URL`)
+
+---
+
+## 🔄 System Service Configuration
+
+The system can run as a systemd service for automatic startup on boot.
+
+**Current Setup**: Integrated service (`tdb.service`)
+- Runs `main.py` which combines GUI + Serial Reader
+- Single service manages both components
+
+**Legacy Setup**: Separate services
+- `tdb-serial.service` - Serial reader only
+- `tdb-gui.service` - GUI only
+
+**Rollback Guide**: To revert to legacy separate services, see `AUTORUN_BACKUP.md`
+
+**Service Commands**:
+```bash
+# Check status
+sudo systemctl status tdb.service
+
+# View logs
+sudo journalctl -u tdb.service -f
+
+# Restart
+sudo systemctl restart tdb.service
+```
+
+---
+
 # 한국어 가이드
 
 ## 프로젝트 개요
 
-TDB Dispenser는 약 자동 배출 시스템으로, 다음 3가지 컴포넌트로 구성됩니다:
+TDB Dispenser는 약 자동 배출 시스템으로, 다음 컴포넌트로 구성됩니다:
 - **라즈베리파이 클라이언트** (Python): RFID 카드 읽기, 백엔드 서버 통신, 시리얼로 Arduino 제어
 - **Arduino Mega 펌웨어** (C++/PlatformIO): 서보모터, RFID 리더(MFRC522) 제어 및 약 배출
+- **대시보드 GUI** (Tkinter): 실시간 상태 모니터링을 위한 현대적인 2x3 타일 대시보드 및 QR 코드 표시
+- **NestJS 서버** (TypeScript): MySQL 데이터베이스를 사용하는 프로덕션 백엔드 (`tdb_server/`에 로컬 클론)
 - **Mock 서버** (FastAPI): 로컬 테스트용 백엔드 API 시뮬레이터
 
 시스템은 서보모터로 회전판(carousel)을 돌려 세 시간대(아침/점심/저녁)에 맞춰 약을 배출합니다.
@@ -193,13 +313,15 @@ pio device monitor   # 시리얼 모니터
 ### 시스템 실행
 
 ```bash
-# 메인 배출 애플리케이션 실행 (Arduino 연결 필요)
-python hwserial/serial_reader.py
+# 옵션 1: 통합 시스템 실행 (GUI + 시리얼 리더)
+python main.py                    # 프로덕션 모드 (전체화면)
+python main.py --demo             # 데모 모드 (윈도우 모드, 시뮬레이션)
 
-# GUI 실행 (QR 코드 및 상태 표시)
-python gui/qr_display.py
+# 옵션 2: 컴포넌트 개별 실행 (레거시 모드)
+python hwserial/serial_reader.py  # 시리얼 리더만 (Arduino 필요)
+python gui/qr_display.py          # 간단한 QR 표시 GUI
 
-# 로컬 테스트용 mock 서버 실행
+# 로컬 테스트용 mock 서버 실행 (개발용)
 cd dev
 uvicorn mock_server:app --reload --port 8000
 ```
@@ -224,11 +346,21 @@ pio device monitor
 ### 데이터 흐름
 
 ```
-RFID 카드 → Arduino → 시리얼 → Pi (serial_reader.py) → 백엔드 API
+RFID 카드 → Arduino → 시리얼 → Pi (serial_reader.py) → 백엔드 API (NestJS/MySQL)
                                     ↓
                               상태 파일 (data/state.json)
                                     ↓
-                              GUI (qr_display.py)
+                          ┌──────────┴──────────┐
+                          ↓                     ↓
+                 GUI (qr_display.py)    대시보드 (gui_app.py)
+                 (간단한 QR 표시)       (2x3 타일 대시보드)
+```
+
+**통합 모드 (main.py)**:
+```
+RFID 카드 → Arduino → 시리얼 → serial_reader_adapter → 대시보드 GUI (gui_app.py)
+                                         ↓
+                                   백엔드 API (NestJS/MySQL)
 ```
 
 ### 핵심 컴포넌트
@@ -262,6 +394,31 @@ RFID 카드 → Arduino → 시리얼 → Pi (serial_reader.py) → 백엔드 AP
 - MFRC522 RFID 태그 읽고 UID를 시리얼로 출력
 - 명령 처리: `DISPENSE,<slot>,<count>`, `STEP,NEXT`, `HOME`, `JOG,<dir>,<ms>`
 - `servos.hpp`로 서보 제어 (타이밍: 아침=0ms, 점심=2000ms, 저녁=4500ms)
+
+**gui/gui_app.py** - 대시보드 GUI (신규)
+- 다크 테마의 현대적인 2x3 타일 레이아웃
+- 실시간 상태 표시 (시간, 재고, 사용자, 스케줄, 상태, 기기 ID)
+- 알림 및 QR 코드용 팝업 오버레이 시스템
+- `ui_call()` 메서드를 통한 스레드 안전 UI 업데이트
+- 라즈베리파이 터치스크린용 전체화면 지원
+
+**gui/qr_display.py** - 간단한 QR 표시 GUI (레거시)
+- 등록용 경량 QR 코드 표시
+- 500ms마다 `data/state.json` 폴링
+- 기본 상태용 텍스트 표시
+- 컴포넌트 개별 실행 시 사용
+
+**hwserial/serial_reader_adapter.py** - GUI 어댑터 (신규)
+- serial_reader와 GUI 컴포넌트 연결
+- 이벤트 기반 콜백: `on_waiting`, `on_uid`, `on_error`, `on_unregistered`
+- UID 디바운싱 (1초 쿨다운)
+- 하드웨어 없이 테스트 가능한 데모 모드
+
+**main.py** - 통합 애플리케이션 부트스트랩 (신규)
+- 대시보드 GUI + 시리얼 리더를 하나의 프로세스로 통합
+- 명령줄 플래그: `--demo` 시뮬레이션 모드용
+- 어댑터와 GUI 간 이벤트 콜백 연결
+- systemd 서비스용 프로덕션 준비 진입점
 
 ### 회전판 위치 로직
 
@@ -337,6 +494,85 @@ Arduino는 RFID UID를 대문자 16진수 문자열로 전송합니다 (예: `6C
 **복구 도구**
 - `recovery_jog.py`로 회전판 수동 제어 가능
 - 긴급 상황에서 물리적 위치 조정 지원
+
+---
+
+## 📊 데이터베이스 스키마
+
+프로덕션 데이터베이스는 `DATABASE.md`에 완전히 문서화되어 있습니다. 주요 내용:
+
+**데이터베이스 호스트**: AWS RDS MySQL 8.0.42 (`tdb.cxc48q26c73q.ap-southeast-2.rds.amazonaws.com`)
+
+**핵심 테이블**:
+- `users` - RFID 카드 매핑이 포함된 사용자 계정 (`k_uid` 필드)
+- `user_group` - 디스펜서를 공유하는 가족 그룹
+- `user_group_membership` - 다대다 사용자-그룹 관계
+- `machine` - 물리적 디스펜서 기기
+- `machine_slot` - 재고 추적이 포함된 슬롯 할당 (슬롯 1-3)
+- `medicine` - 처방약 및 건강기능식품 카탈로그
+- `schedule` - 주간 반복 스케줄 (day_of_week + time_of_day)
+- `dose_history` - 모든 배출 이벤트의 완전한 감사 추적
+
+**로컬 데이터베이스 덤프**: SQL 스키마 내보내기 파일이 `DBstructure/` 디렉토리에 있습니다.
+
+완전한 스키마 문서, ER 다이어그램, 샘플 쿼리는 `DATABASE.md`를 참조하세요.
+
+---
+
+## 🖥️ 백엔드 서버 (로컬 클론)
+
+TDB NestJS 서버가 `tdb_server/TDB_Server/`에 로컬로 클론되어 있습니다.
+
+**빠른 시작**:
+```bash
+cd tdb_server/TDB_Server
+
+# 의존성 설치
+npm install
+
+# 환경 설정
+cp .env.example .env  # MySQL 자격증명으로 편집
+
+# 개발 서버 실행
+npm run start:dev
+```
+
+**문서**:
+- 서버 아키텍처: `tdb_server/INIT.md`
+- Pi용 API 변경사항: `tdb_server/TDB_Server/API_CHANGES.md`
+- Pi 설정 가이드: `tdb_server/TDB_Server/RASPBERRY_PI_SETUP.md`
+
+**프로덕션 서버**:
+- 프로덕션 인스턴스는 RDS MySQL과 함께 AWS EC2에서 실행됩니다
+- 연결 세부정보는 `config/.env` (`TDB_SERVER_BASE_URL`)에 있습니다
+
+---
+
+## 🔄 시스템 서비스 설정
+
+시스템은 부팅 시 자동 시작을 위해 systemd 서비스로 실행할 수 있습니다.
+
+**현재 설정**: 통합 서비스 (`tdb.service`)
+- GUI + 시리얼 리더를 결합한 `main.py` 실행
+- 단일 서비스가 두 컴포넌트를 모두 관리
+
+**레거시 설정**: 개별 서비스
+- `tdb-serial.service` - 시리얼 리더만
+- `tdb-gui.service` - GUI만
+
+**롤백 가이드**: 레거시 개별 서비스로 되돌리려면 `AUTORUN_BACKUP.md`를 참조하세요
+
+**서비스 명령어**:
+```bash
+# 상태 확인
+sudo systemctl status tdb.service
+
+# 로그 보기
+sudo journalctl -u tdb.service -f
+
+# 재시작
+sudo systemctl restart tdb.service
+```
 
 ---
 

@@ -124,7 +124,7 @@ def main():
     # 시리얼 포트 열기
     print("Arduino 연결 중...")
     try:
-        ser = open_serial()
+        ser = open_serial(baud_rate=9600)
     except Exception as e:
         print(f"❌ 시리얼 포트 열기 실패: {e}")
         print("\n해결 방법:")

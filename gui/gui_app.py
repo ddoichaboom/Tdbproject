@@ -15,10 +15,10 @@ class DashboardApp(tk.Tk):
         self.ACCENT_COLOR = '#76d7c4'
         self.TEXT_COLOR = '#e0e0e0'
         self.BORDER_COLOR = '#444444'
-        self.FONT_BOLD = ('Helvetica', 26, 'bold')
-        self.FONT_NORMAL = ('Helvetica', 20)
-        self.FONT_DATE = ('Helvetica', 24)
-        self.FONT_BIG_TIME = ('Helvetica', 60, 'bold')
+        self.FONT_BOLD = ('Helvetica', 30, 'bold')
+        self.FONT_NORMAL = ('Helvetica', 24)
+        self.FONT_DATE = ('Helvetica', 28)
+        self.FONT_BIG_TIME = ('Helvetica', 70, 'bold')
 
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
@@ -38,6 +38,9 @@ class DashboardApp(tk.Tk):
         self._popup_message_label = None
         self._qr_photo_image = None
         self._inventory_images = []
+
+        # 깜박임 방지를 위한 캐시
+        self._cached_users = None
 
         self._create_dashboard()
         self.update_time()
@@ -71,11 +74,11 @@ class DashboardApp(tk.Tk):
                 self.inventory_labels = []
                 for slot_num in range(1, 4):
                     slot_frame = ttk.Frame(inventory_container, style='Card.TFrame')
-                    slot_frame.grid(row=0, column=slot_num - 1, sticky="nsew", padx=1)
-                    ttk.Label(slot_frame, text=f"Slot {slot_num}", font=('Helvetica', 20, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR, anchor="center").pack(pady=(5, 10), side=tk.TOP)
-                    stock_label = ttk.Label(slot_frame, text="- / -", font=('Helvetica', 24, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
+                    slot_frame.grid(row=0, column=slot_num - 1, sticky="nsew", padx=0)
+                    ttk.Label(slot_frame, text=f"Slot {slot_num}", font=('Helvetica', 24, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR, anchor="center").pack(pady=(5, 10), side=tk.TOP)
+                    stock_label = ttk.Label(slot_frame, text="- / -", font=('Helvetica', 28, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
                     stock_label.pack(pady=(10, 5), side=tk.BOTTOM)
-                    name_label = ttk.Label(slot_frame, text="-", font=('Helvetica', 16), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
+                    name_label = ttk.Label(slot_frame, text="-", font=('Helvetica', 20), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
                     name_label.pack(pady=0, side=tk.BOTTOM)
                     img_label = ttk.Label(slot_frame, background=self.CARD_COLOR)
                     img_label.pack(pady=5, expand=True)
@@ -88,8 +91,8 @@ class DashboardApp(tk.Tk):
                 for slot, name in {"morning": "아침", "afternoon": "점심", "evening": "저녁"}.items():
                     slot_frame_inner = ttk.Frame(schedule_frame, style='Card.TFrame')
                     slot_frame_inner.pack(fill=tk.BOTH, expand=True)
-                    ttk.Label(slot_frame_inner, text=name, font=('Helvetica', 18, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(anchor='w', padx=10)
-                    content_label = ttk.Label(slot_frame_inner, text="스케줄 없음", font=('Helvetica', 18), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, justify=tk.LEFT)
+                    ttk.Label(slot_frame_inner, text=name, font=('Helvetica', 22, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(anchor='w', padx=10)
+                    content_label = ttk.Label(slot_frame_inner, text="스케줄 없음", font=('Helvetica', 22), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, justify=tk.LEFT)
                     content_label.pack(anchor='w', padx=10, pady=(0, 5))
                     self.schedule_labels[slot] = content_label
                 self.tiles.append(schedule_frame)
@@ -120,9 +123,9 @@ class DashboardApp(tk.Tk):
             popup_frame.grid_rowconfigure(1, weight=1)
             popup_frame.grid_rowconfigure(2, weight=0)
             popup_frame.grid_columnconfigure(0, weight=1)
-            self._popup_title = ttk.Label(popup_frame, font=('Helvetica', 26, 'bold'), style='CardTitle.TLabel', anchor="center")
+            self._popup_title = ttk.Label(popup_frame, font=('Helvetica', 30, 'bold'), style='CardTitle.TLabel', anchor="center")
             self._popup_title.grid(row=0, column=0, sticky='ew', pady=(20, 10))
-            self._popup_message_label = ttk.Label(popup_frame, font=('Helvetica', 16), style='CardContent.TLabel', anchor="center")
+            self._popup_message_label = ttk.Label(popup_frame, font=('Helvetica', 20), style='CardContent.TLabel', anchor="center")
             self._popup_qr_label = ttk.Label(popup_frame, background=self.CARD_COLOR)
 
     def show_popup(self, title="카드를 태그해주세요", message="RFID 카드를 리더기에 가까이 대세요"):
@@ -208,6 +211,15 @@ class DashboardApp(tk.Tk):
                 labels['img'].config(image='')
 
     def update_user_tile(self, users: list):
+        # 데이터 변경 감지: 이전과 동일하면 업데이트하지 않음
+        import json
+        users_json = json.dumps(users, sort_keys=True)
+        if self._cached_users == users_json:
+            return  # 변경 없음, 다시 그리지 않음
+
+        self._cached_users = users_json
+
+        # 변경된 경우에만 다시 그리기
         container = self.tiles[5]
         for widget in container.winfo_children():
             widget.destroy()
@@ -217,13 +229,13 @@ class DashboardApp(tk.Tk):
         users.sort(key=lambda u: u.get('role') != 'parent')
         for i, user in enumerate(users):
             user_frame = ttk.Frame(container, style='Card.TFrame')
-            user_frame.place(x=0, y=i * 40, relwidth=1.0, height=40)
+            user_frame.place(x=0, y=i * 45, relwidth=1.0, height=45)
             user_name = user.get('name', '이름없음')
             if user.get('role') == 'parent':
-                ttk.Label(user_frame, text=user_name, font=('Helvetica', 18, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(10, 5), pady=5)
-                ttk.Label(user_frame, text="(보호자)", font=('Helvetica', 18, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(0, 10), pady=5)
+                ttk.Label(user_frame, text=user_name, font=('Helvetica', 22, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(10, 5), pady=5)
+                ttk.Label(user_frame, text="(보호자)", font=('Helvetica', 22, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(0, 10), pady=5)
             else:
-                ttk.Label(user_frame, text=user_name, font=('Helvetica', 18), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(anchor='w', padx=(25, 0), pady=5)
+                ttk.Label(user_frame, text=user_name, font=('Helvetica', 22), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(anchor='w', padx=(25, 0), pady=5)
 
     def update_time(self):
         now = datetime.now()

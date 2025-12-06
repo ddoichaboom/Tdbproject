@@ -43,19 +43,27 @@ def dispense(ser, slot: int, count: int):
     return _send_cmd_wait(ser, f"DISPENSE,{int(slot)},{int(count)}")
 
 def send_raw(ser, line: str, timeout: float = 8.0):
-    """명령 전송 후 OK/ERR 응답 1줄 수신. READY/빈줄 무시."""
+    """명령 전송 후 OK/ERR 응답 수신. 중간 메시지는 무시하고 최종 응답만 반환."""
     line = (line.strip() + "\n").encode("ascii", "ignore")
     ser.reset_input_buffer()  # 이전 명령의 늦게 온 OK를 싹 비움
     ser.write(line)
     ser.flush()
     t0 = time.time()
+    last_response = None
     while time.time() - t0 < timeout:
         if ser.in_waiting:
             resp = ser.readline().decode("ascii", "ignore").strip()
             if not resp or resp == "READY":
                 continue
-            return True, resp
+            # OK/ERR 응답이면 즉시 반환
+            if resp.startswith("OK,") or resp.startswith("ERR,"):
+                return True if resp.startswith("OK,") else False, resp
+            # 중간 메시지는 저장만 하고 계속 읽기
+            last_response = resp
         time.sleep(0.01)
+    # 타임아웃 시 마지막으로 받은 응답 반환 (있으면)
+    if last_response:
+        return False, f"TIMEOUT (last: {last_response})"
     return False, "TIMEOUT"
 
 def step_next(ser):

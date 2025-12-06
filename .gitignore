@@ -1,6 +1,36 @@
+# Python
 .venv/
-config/.env
-logs/
 __pycache__/
-.pio/
+*.pyc
+*.pyo
+*.pyd
+
+# 환경 설정 (민감 정보)
+config/.env
+
+# 로그 및 런타임 데이터
+logs/
+data/state.json
+data/offline_reports.jsonl
+
+# IDE
 .vscode/
+.idea/
+
+# PlatformIO
+.pio/
+firmware/.pio/
+
+# 서버 코드 (EC2 배포됨, 로컬 참고용만)
+tdb_server/
+tdb_server_temp/
+
+# 임시 파일
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

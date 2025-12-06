@@ -12,18 +12,33 @@ static const unsigned long kSERVO_MS_STEP2   = 2500; // 1->2
 // ========================================
 
 void servoNeutral() {
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+
   servo1.write(SERVO_NEUTRAL);
   servo2.write(SERVO_NEUTRAL);
+  delay(200);
+
+  servo1.detach();
+  servo2.detach();
 }
 
 void servoMoveFB(char dir, int speedPercent, unsigned long ms) {
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+
   int s = constrain(speedPercent, 0, 100);
   int servoSpeed = map(s, 0, 100, 0, 90);
   int v1, v2;
   if (dir == 'F') { v1 = SERVO_NEUTRAL - servoSpeed; v2 = SERVO_NEUTRAL + servoSpeed; }
   else            { v1 = SERVO_NEUTRAL + servoSpeed; v2 = SERVO_NEUTRAL - servoSpeed; }
-  servo1.write(v1); servo2.write(v2);
+
+  servo1.write(v1);
+  servo2.write(v2);
   delay(ms);
+
+  servo1.detach();
+  servo2.detach();
 }
 
 void servoStepNext() {

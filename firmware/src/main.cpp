@@ -128,20 +128,20 @@ static void handleSerialCommand() {
 
         int idx = slot - 1;
 
-        // 테스트 실행
+        // 테스트 실행 (Active-Low: HIGH=OFF, LOW=ON)
         if (type == 'L' || type == 'B') {
           Serial.print("TESTING_LOADING,"); Serial.println(slot);
-          digitalWrite(LOADING_SOLENOID_PINS[idx], LOW);
+          digitalWrite(LOADING_SOLENOID_PINS[idx], LOW);   // ON
           delay(1000);
-          digitalWrite(LOADING_SOLENOID_PINS[idx], HIGH);
+          digitalWrite(LOADING_SOLENOID_PINS[idx], HIGH);  // OFF
           delay(500);
         }
 
         if (type == 'D' || type == 'B') {
           Serial.print("TESTING_DISPENSING,"); Serial.println(slot);
-          digitalWrite(DISPENSING_SOLENOID_PINS[idx], LOW);
+          digitalWrite(DISPENSING_SOLENOID_PINS[idx], LOW);   // ON
           delay(1000);
-          digitalWrite(DISPENSING_SOLENOID_PINS[idx], HIGH);
+          digitalWrite(DISPENSING_SOLENOID_PINS[idx], HIGH);  // OFF
           delay(500);
         }
 
@@ -201,17 +201,17 @@ static void handleSerialCommand() {
 
 
 static bool dispenseSlot(int slot, int count) {
-  // TODO: 네 실제 로직으로 교체 (아래는 예시: 솔레노이드만 1초씩)
+  // Active-Low: HIGH=OFF, LOW=ON
   int idx = slot - 1;
   if (idx < 0 || idx >= 3) return false;
   for (int i=0; i<count; i++) {
-        digitalWrite(LOADING_SOLENOID_PINS[idx], LOW);
+        digitalWrite(LOADING_SOLENOID_PINS[idx], LOW);   // ON
         delay(1000);
-        digitalWrite(LOADING_SOLENOID_PINS[idx], HIGH);
+        digitalWrite(LOADING_SOLENOID_PINS[idx], HIGH);  // OFF
         delay(300);
-        digitalWrite(DISPENSING_SOLENOID_PINS[idx], LOW);
+        digitalWrite(DISPENSING_SOLENOID_PINS[idx], LOW);   // ON
         delay(1000);
-        digitalWrite(DISPENSING_SOLENOID_PINS[idx], HIGH);
+        digitalWrite(DISPENSING_SOLENOID_PINS[idx], HIGH);  // OFF
         delay(300);
   }
   return true;
