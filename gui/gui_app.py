@@ -6,6 +6,8 @@ import qrcode
 from PIL import Image, ImageTk
 import time
 import sys
+import subprocess
+import os
 
 class DashboardApp(tk.Tk):
     def __init__(self, fullscreen=True):
@@ -65,6 +67,9 @@ class DashboardApp(tk.Tk):
         # ✅ 레이아웃 계산 완료 후 윈도우 표시
         self.update_idletasks()  # 모든 pending 작업 완료
         self.deiconify()  # 윈도우 표시
+
+        # ✅ F12 키로 스크린샷 기능 바인딩
+        self.bind('<F12>', self.take_screenshot)
 
         # ✅ Watchdog 시작 (GUI 자가 진단)
         self._start_watchdog()
@@ -401,6 +406,43 @@ class DashboardApp(tk.Tk):
         self._last_heartbeat = time.time()
 
         self.after(1000, self.update_time)
+
+    def take_screenshot(self, event=None):
+        """F12 키로 스크린샷 저장 (grim 사용)"""
+        try:
+            # 스크린샷 저장 디렉토리
+            screenshot_dir = os.path.expanduser("~/screenshots")
+            os.makedirs(screenshot_dir, exist_ok=True)
+
+            # 타임스탬프 파일명
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            filename = os.path.join(screenshot_dir, f"{timestamp}_tdb_gui.png")
+
+            # grim으로 스크린샷 캡처 (Wayland)
+            result = subprocess.run(['grim', filename],
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=5)
+
+            if result.returncode == 0:
+                print(f"✅ 스크린샷 저장: {filename}")
+                self.show_popup("스크린샷 저장 완료",
+                              f"저장 위치:\n{filename}")
+                # 3초 후 팝업 자동 닫기
+                self.after(3000, self.hide_popup)
+            else:
+                raise Exception(f"grim 실행 실패: {result.stderr}")
+
+        except FileNotFoundError:
+            print("❌ grim이 설치되어 있지 않습니다")
+            self.show_popup("스크린샷 실패",
+                          "grim이 설치되어 있지 않습니다.\nsudo apt install grim")
+        except subprocess.TimeoutExpired:
+            print("❌ 스크린샷 타임아웃")
+            self.show_popup("스크린샷 실패", "스크린샷 캡처 시간 초과")
+        except Exception as e:
+            print(f"❌ 스크린샷 실패: {e}")
+            self.show_popup("스크린샷 실패", f"오류 발생:\n{str(e)}")
 
 if __name__ == '__main__':
     app = DashboardApp(fullscreen=False)
