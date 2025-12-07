@@ -12,6 +12,21 @@ from services.api_client import (
     get_dose_history_for_machine,
 )
 
+# ✅ 배출 상태 관리 클래스 (폴링 일시정지용)
+class DispenseState:
+    is_dispensing = False
+    lock = threading.Lock()
+
+    @classmethod
+    def set_dispensing(cls, state: bool):
+        with cls.lock:
+            cls.is_dispensing = state
+
+    @classmethod
+    def get_dispensing(cls):
+        with cls.lock:
+            return cls.is_dispensing
+
 def main():
     is_demo_mode = '--demo' in sys.argv
     app = DashboardApp(fullscreen=not is_demo_mode)
@@ -43,6 +58,15 @@ def main():
         app.ui_call(app.update_tile_content, 3, "미등록 카드")
 
     def on_status_update(tile_index, message):
+        # ✅ 배출 상태 감지 (이동/배출/복귀 중 → 폴링 일시정지)
+        dispensing_keywords = ["이동 중", "배출 중", "복귀 중", "위치로", "배출 시작"]
+        done_keywords = ["완료", "대기 중", "RFID"]
+
+        if any(keyword in message for keyword in dispensing_keywords):
+            DispenseState.set_dispensing(True)
+        elif any(keyword in message for keyword in done_keywords):
+            DispenseState.set_dispensing(False)
+
         app.ui_call(app.update_tile_content, tile_index, message)
 
     def on_user_list_update(users: list):
@@ -82,22 +106,28 @@ def main():
     def poll_server_data():
         time.sleep(1)
         while not stop_polling.is_set():
+            # ✅ 배출 중이면 폴링 스킵 (1초 대기 후 재확인)
+            if DispenseState.get_dispensing():
+                print("[POLLING] 배출 진행 중... 폴링 일시정지")
+                time.sleep(1)
+                continue
+
             print("[POLLING] 서버에서 최신 정보를 가져옵니다...")
             try:
                 machine_id = settings.MACHINE_ID
                 if not machine_id:
                     time.sleep(10)
                     continue
-                
+
                 users = get_users_for_machine(machine_id)
                 if users is not None: app.ui_call(on_user_list_update, users)
-                
+
                 slots = get_slots_for_machine(machine_id)
                 if slots is not None: app.ui_call(on_slot_list_update, slots)
-                
+
                 schedules = get_today_schedules_for_machine(machine_id)
                 if schedules is not None: app.ui_call(on_schedule_list_update, schedules)
-                
+
                 yesterday = datetime.now() - timedelta(days=1)
                 start_date_str = yesterday.strftime('%Y-%m-%d')
                 history = get_dose_history_for_machine(machine_id, start_date=start_date_str)

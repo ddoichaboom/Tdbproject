@@ -4,11 +4,16 @@ from datetime import datetime
 import platform
 import qrcode
 from PIL import Image, ImageTk
+import time
+import sys
 
 class DashboardApp(tk.Tk):
     def __init__(self, fullscreen=True):
         super().__init__()
         self.title("TDB 약 배출 시스템")
+
+        # ✅ 초기화 중에는 윈도우 숨기기 (깜박임 방지)
+        self.withdraw()
 
         self.BG_COLOR = '#1e1e1e'
         self.CARD_COLOR = '#2c2c2c'
@@ -39,23 +44,49 @@ class DashboardApp(tk.Tk):
         self._qr_photo_image = None
         self._inventory_images = []
 
-        # 깜박임 방지를 위한 캐시
+        # ✅ 깜박임 방지를 위한 캐시 (모든 타일)
         self._cached_users = None
+        self._cached_slots = None
+        self._cached_schedules = None
+        self._cached_history = None
+        self._popup_geometry_set = False
+
+        # ✅ 위젯 재사용을 위한 프레임 캐시
+        self._user_frames = []
+
+        # ✅ Watchdog 변수 (GUI 자가 진단용)
+        self._last_heartbeat = time.time()
+        self._last_watchdog_log = 0  # 마지막 로그 시간 (0으로 초기화 → 첫 체크에서 즉시 로그)
+        self._watchdog_enabled = True
 
         self._create_dashboard()
         self.update_time()
 
+        # ✅ 레이아웃 계산 완료 후 윈도우 표시
+        self.update_idletasks()  # 모든 pending 작업 완료
+        self.deiconify()  # 윈도우 표시
+
+        # ✅ Watchdog 시작 (GUI 자가 진단)
+        self._start_watchdog()
+
     def _create_dashboard(self):
         main_frame = ttk.Frame(self, style='TFrame')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
         self.tiles = []
         titles = ["현재 시간", "약품 재고 현황", "오늘의 전체 스케줄", "약 배출 상태", "최근 배출 기록", "등록된 유저"]
         for i in range(6):
             row, col = divmod(i, 3)
-            main_frame.grid_rowconfigure(row, weight=1)
-            main_frame.grid_columnconfigure(col, weight=1)
+            # ✅ 반응형 유지: weight=1, uniform으로 균등 분할
+            main_frame.grid_rowconfigure(row, weight=1, minsize=150, uniform="row")
+            main_frame.grid_columnconfigure(col, weight=1, minsize=200, uniform="col")
+
+            # ✅ border_frame: sticky="nsew"로 확장, propagate는 False로 내부 안정화
             border_frame = tk.Frame(main_frame, background=self.BORDER_COLOR, borderwidth=0)
             border_frame.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+            border_frame.grid_propagate(False)  # ✅ 내용에 따라 크기 변경 방지
+            border_frame.pack_propagate(False)  # ✅ pack도 무시
+
             card = ttk.Frame(border_frame, style='Card.TFrame')
             card.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
             title_label = ttk.Label(card, text=titles[i], style='CardTitle.TLabel', anchor="center")
@@ -111,10 +142,15 @@ class DashboardApp(tk.Tk):
             if platform.system() != "Windows":
                 self._popup.overrideredirect(True)
                 self._popup.attributes('-topmost', True)
-            w, h = self.winfo_screenwidth(), self.winfo_screenheight()
-            pop_w, pop_h = int(w * 0.6), int(h * 0.5)
-            x, y = (w - pop_w) // 2, (h - pop_h) // 2
-            self._popup.geometry(f"{pop_w}x{pop_h}+{x}+{y}")
+
+            # ✅ geometry는 최초 1회만 계산 (캐싱)
+            if not self._popup_geometry_set:
+                w, h = self.winfo_screenwidth(), self.winfo_screenheight()
+                pop_w, pop_h = int(w * 0.6), int(h * 0.5)
+                x, y = (w - pop_w) // 2, (h - pop_h) // 2
+                self._popup.geometry(f"{pop_w}x{pop_h}+{x}+{y}")
+                self._popup_geometry_set = True
+
             border_frame = tk.Frame(self._popup, background=self.ACCENT_COLOR, borderwidth=0)
             border_frame.pack(fill=tk.BOTH, expand=True)
             popup_frame = ttk.Frame(border_frame, style='Card.TFrame')
@@ -166,6 +202,13 @@ class DashboardApp(tk.Tk):
                 self.tiles[tile_index].config(text=str(content))
 
     def update_schedule_tile(self, schedules: list):
+        # ✅ 캐싱: 데이터 동일 시 렌더링 스킵
+        import json
+        schedules_json = json.dumps(schedules, sort_keys=True)
+        if self._cached_schedules == schedules_json:
+            return
+        self._cached_schedules = schedules_json
+
         schedules_by_time = {"morning": [], "afternoon": [], "evening": []}
         for s in schedules:
             time_of_day = s.get("time_of_day")
@@ -178,6 +221,13 @@ class DashboardApp(tk.Tk):
                 self.schedule_labels[slot].config(text=content)
 
     def update_inventory_tile(self, slots: list):
+        # ✅ 캐싱: 데이터 동일 시 렌더링 스킵
+        import json
+        slots_json = json.dumps(slots, sort_keys=True)
+        if self._cached_slots == slots_json:
+            return
+        self._cached_slots = slots_json
+
         slot_data_map = {s.get('slot_number'): s for s in slots}
         self._inventory_images.clear()
         for i in range(3):
@@ -211,36 +261,145 @@ class DashboardApp(tk.Tk):
                 labels['img'].config(image='')
 
     def update_user_tile(self, users: list):
-        # 데이터 변경 감지: 이전과 동일하면 업데이트하지 않음
+        # ✅ 데이터 변경 감지: 이전과 동일하면 업데이트하지 않음
         import json
         users_json = json.dumps(users, sort_keys=True)
         if self._cached_users == users_json:
             return  # 변경 없음, 다시 그리지 않음
 
         self._cached_users = users_json
-
-        # 변경된 경우에만 다시 그리기
         container = self.tiles[5]
-        for widget in container.winfo_children():
-            widget.destroy()
+
+        # 빈 상태 처리
         if not users:
-            ttk.Label(container, text="등록된 사용자 없음", style='CardContent.TLabel', anchor="center").place(relx=0.5, rely=0.5, anchor='center')
+            # 모든 프레임 숨기기
+            for frame in self._user_frames:
+                frame.place_forget()
+            # 빈 상태 라벨 표시
+            if not hasattr(self, '_empty_user_label'):
+                self._empty_user_label = ttk.Label(container, text="등록된 사용자 없음",
+                                                   style='CardContent.TLabel', anchor="center")
+            self._empty_user_label.place(relx=0.5, rely=0.5, anchor='center')
             return
+
+        # 빈 상태 라벨 숨기기
+        if hasattr(self, '_empty_user_label'):
+            self._empty_user_label.place_forget()
+
         users.sort(key=lambda u: u.get('role') != 'parent')
+
+        # ✅ 유저 수만큼 프레임 생성/재사용 (destroy 제거)
         for i, user in enumerate(users):
-            user_frame = ttk.Frame(container, style='Card.TFrame')
-            user_frame.place(x=0, y=i * 45, relwidth=1.0, height=45)
-            user_name = user.get('name', '이름없음')
-            if user.get('role') == 'parent':
-                ttk.Label(user_frame, text=user_name, font=('Helvetica', 22, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(10, 5), pady=5)
-                ttk.Label(user_frame, text="(보호자)", font=('Helvetica', 22, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(side=tk.LEFT, anchor='w', padx=(0, 10), pady=5)
+            if i < len(self._user_frames):
+                # ✅ 기존 프레임 재사용 - 라벨만 업데이트 (destroy 제거!)
+                user_frame = self._user_frames[i]
+                labels = [w for w in user_frame.winfo_children() if isinstance(w, ttk.Label)]
+
+                user_name = user.get('name', '이름없음')
+                is_parent = user.get('role') == 'parent'
+
+                # 기존 라벨 업데이트
+                if labels:
+                    # 기존 구조와 다르면 재생성
+                    if (is_parent and len(labels) != 2) or (not is_parent and len(labels) != 1):
+                        for child in user_frame.winfo_children():
+                            child.destroy()
+                        self._create_user_labels(user_frame, user_name, is_parent)
+                    else:
+                        # 라벨 텍스트만 업데이트
+                        labels[0].config(text=user_name)
+                        if is_parent and len(labels) > 1:
+                            labels[1].config(text="(보호자)")
+                else:
+                    # 라벨이 없으면 생성
+                    self._create_user_labels(user_frame, user_name, is_parent)
             else:
-                ttk.Label(user_frame, text=user_name, font=('Helvetica', 22), background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(anchor='w', padx=(25, 0), pady=5)
+                # ✅ 새 프레임 생성 (최초 1회만)
+                user_frame = ttk.Frame(container, style='Card.TFrame')
+                self._user_frames.append(user_frame)
+                user_name = user.get('name', '이름없음')
+                is_parent = user.get('role') == 'parent'
+                self._create_user_labels(user_frame, user_name, is_parent)
+
+            # 프레임 위치 설정
+            user_frame.place(x=0, y=i * 45, relwidth=1.0, height=45)
+
+        # 사용하지 않는 프레임 숨기기
+        for i in range(len(users), len(self._user_frames)):
+            self._user_frames[i].place_forget()
+
+    def _create_user_labels(self, parent_frame, user_name, is_parent):
+        """✅ 유저 라벨 생성 헬퍼 함수"""
+        if is_parent:
+            ttk.Label(parent_frame, text=user_name, font=('Helvetica', 22, 'bold'),
+                     background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(
+                side=tk.LEFT, anchor='w', padx=(10, 5), pady=5)
+            ttk.Label(parent_frame, text="(보호자)", font=('Helvetica', 22, 'bold'),
+                     background=self.CARD_COLOR, foreground=self.ACCENT_COLOR).pack(
+                side=tk.LEFT, anchor='w', padx=(0, 10), pady=5)
+        else:
+            ttk.Label(parent_frame, text=user_name, font=('Helvetica', 22),
+                     background=self.CARD_COLOR, foreground=self.TEXT_COLOR).pack(
+                anchor='w', padx=(25, 0), pady=5)
+
+    def _start_watchdog(self):
+        """
+        ✅ GUI Watchdog: 주기적으로 GUI 건강 상태 점검
+
+        점검 항목:
+        1. GUI 응답 확인 (heartbeat 타이밍)
+        2. 타일 구조 검증
+        3. 메인 윈도우 존재 확인
+
+        문제 발견 시 프로세스 종료 → systemd가 자동 재시작
+        """
+        if not self._watchdog_enabled:
+            return
+
+        try:
+            current_time = time.time()
+            elapsed = current_time - self._last_heartbeat
+
+            # 체크 1: GUI 응답 확인 (60초 이상 heartbeat 없으면 비정상)
+            if elapsed > 60:
+                print(f"[WATCHDOG] ❌ GUI 응답 없음! (마지막 heartbeat: {elapsed:.0f}초 전)")
+                print("[WATCHDOG] 시스템 재시작 요청...")
+                sys.exit(1)  # systemd가 5초 후 재시작
+
+            # 체크 2: 타일 구조 검증 (6개 타일이 유지되는지)
+            if not hasattr(self, 'tiles') or len(self.tiles) < 6:
+                print("[WATCHDOG] ❌ 타일 구조 손상! (tiles 개수 부족)")
+                print("[WATCHDOG] 시스템 재시작 요청...")
+                sys.exit(1)
+
+            # 체크 3: 메인 윈도우 존재 확인
+            if not self.winfo_exists():
+                print("[WATCHDOG] ❌ 메인 윈도우가 파괴됨!")
+                print("[WATCHDOG] 시스템 재시작 요청...")
+                sys.exit(1)
+
+            # 체크 4: 정상 상태 로깅 (5분마다)
+            time_since_last_log = current_time - self._last_watchdog_log
+            if time_since_last_log >= 300:  # 5분(300초) 경과 시
+                print(f"[WATCHDOG] ✅ GUI 정상 작동 중 (heartbeat: {elapsed:.1f}초 전)")
+                self._last_watchdog_log = current_time
+
+        except Exception as e:
+            # Watchdog 자체 오류는 무시 (GUI가 정상이면 계속 실행)
+            print(f"[WATCHDOG_ERROR] 점검 중 오류 발생: {e}")
+            # Watchdog 오류로 인한 재시작은 하지 않음
+
+        # 30초마다 재실행
+        self.after(30000, self._start_watchdog)
 
     def update_time(self):
         now = datetime.now()
         self.date_label.config(text=now.strftime(f'%Y년 %m월 %d일 ({["월", "화", "수", "목", "금", "토", "일"][now.weekday()]})'))
         self.time_label.config(text=now.strftime('%H:%M:%S'))
+
+        # ✅ Watchdog heartbeat 갱신 (GUI가 정상 작동 중임을 표시)
+        self._last_heartbeat = time.time()
+
         self.after(1000, self.update_time)
 
 if __name__ == '__main__':
