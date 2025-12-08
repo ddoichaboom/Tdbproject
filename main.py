@@ -104,38 +104,41 @@ def main():
     polling_thread = None
 
     def poll_server_data():
-        time.sleep(1)
-        while not stop_polling.is_set():
-            # ✅ 배출 중이면 폴링 스킵 (1초 대기 후 재확인)
-            if DispenseState.get_dispensing():
-                print("[POLLING] 배출 진행 중... 폴링 일시정지")
-                time.sleep(1)
-                continue
-
-            print("[POLLING] 서버에서 최신 정보를 가져옵니다...")
-            try:
-                machine_id = settings.MACHINE_ID
-                if not machine_id:
-                    time.sleep(10)
+        try:
+            time.sleep(1)
+            while not stop_polling.is_set():
+                # ✅ 배출 중이면 폴링 스킵 (1초 대기 후 재확인)
+                if DispenseState.get_dispensing():
+                    print("[POLLING] 배출 진행 중... 폴링 일시정지")
+                    time.sleep(1)
                     continue
 
-                users = get_users_for_machine(machine_id)
-                if users is not None: app.ui_call(on_user_list_update, users)
+                print("[POLLING] 서버에서 최신 정보를 가져옵니다...")
+                try:
+                    machine_id = settings.MACHINE_ID
+                    if not machine_id:
+                        time.sleep(10)
+                        continue
 
-                slots = get_slots_for_machine(machine_id)
-                if slots is not None: app.ui_call(on_slot_list_update, slots)
+                    users = get_users_for_machine(machine_id)
+                    if users is not None: app.ui_call(on_user_list_update, users)
 
-                schedules = get_today_schedules_for_machine(machine_id)
-                if schedules is not None: app.ui_call(on_schedule_list_update, schedules)
+                    slots = get_slots_for_machine(machine_id)
+                    if slots is not None: app.ui_call(on_slot_list_update, slots)
 
-                yesterday = datetime.now() - timedelta(days=1)
-                start_date_str = yesterday.strftime('%Y-%m-%d')
-                history = get_dose_history_for_machine(machine_id, start_date=start_date_str)
-                if history is not None: app.ui_call(on_history_list_update, history)
+                    schedules = get_today_schedules_for_machine(machine_id)
+                    if schedules is not None: app.ui_call(on_schedule_list_update, schedules)
 
-            except Exception as e:
-                print(f"[POLLING_ERROR] 데이터 업데이트 중 오류 발생: {e}")
-            time.sleep(10)
+                    yesterday = datetime.now() - timedelta(days=1)
+                    start_date_str = yesterday.strftime('%Y-%m-%d')
+                    history = get_dose_history_for_machine(machine_id, start_date=start_date_str)
+                    if history is not None: app.ui_call(on_history_list_update, history)
+
+                except Exception as e:
+                    print(f"[POLLING_ERROR] 데이터 업데이트 중 오류 발생: {e}")
+                time.sleep(10)
+        finally:
+            print("[POLLING] Thread stopped cleanly")
 
     adapter = SerialReaderAdapter(
         on_waiting=on_waiting,

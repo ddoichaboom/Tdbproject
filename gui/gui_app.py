@@ -114,7 +114,7 @@ class DashboardApp(tk.Tk):
                     ttk.Label(slot_frame, text=f"Slot {slot_num}", font=('Helvetica', 24, 'bold'), background=self.CARD_COLOR, foreground=self.ACCENT_COLOR, anchor="center").pack(pady=(5, 10), side=tk.TOP)
                     stock_label = ttk.Label(slot_frame, text="- / -", font=('Helvetica', 28, 'bold'), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
                     stock_label.pack(pady=(10, 5), side=tk.BOTTOM)
-                    name_label = ttk.Label(slot_frame, text="-", font=('Helvetica', 20), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center")
+                    name_label = ttk.Label(slot_frame, text="-", font=('Helvetica', 20), background=self.CARD_COLOR, foreground=self.TEXT_COLOR, anchor="center", wraplength=150, justify=tk.CENTER)
                     name_label.pack(pady=0, side=tk.BOTTOM)
                     img_label = ttk.Label(slot_frame, background=self.CARD_COLOR)
                     img_label.pack(pady=5, expand=True)

@@ -31,6 +31,30 @@ tdb_server_temp/
 *.swp
 *~
 
+# 임시 분석/문서 파일
+*_SPEC.md
+*_REVIEW*.md
+*_CHANGES*.md
+*_INDEX.md
+*_SUMMARY.txt
+*_COMPARISON.md
+*.patch
+
+# 스크린샷 및 이미지
+screenshots/
+*.png
+!gui/assets/images/*.png
+
+# 임시 테스트 스크립트
+diagnose_*.py
+test_*.py
+emergency_*.py
+raspi2png
+
+# 백업 파일
+*.backup
+*.example
+
 # OS
 .DS_Store
 Thumbs.db

@@ -68,9 +68,9 @@ def test_all_slots(ser):
         results.append((slot, success))
 
         if slot < 3:  # 마지막 슬롯이 아니면 대기
-            print("\n다음 슬롯까지 2초 대기...")
+            print("\n다음 슬롯까지 0.5초 대기...")
             import time
-            time.sleep(2)
+            time.sleep(0.5)
 
     # 결과 요약
     print("\n" + "="*50)

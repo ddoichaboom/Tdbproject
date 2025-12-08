@@ -78,6 +78,15 @@ def _time_bucket_now() -> str:
         return "afternoon"
     return "evening"
 
+def _time_key_to_korean(time_key: str) -> str:
+    """시간대 영어 → 한글 변환"""
+    mapping = {
+        "morning": "아침",
+        "afternoon": "점심",
+        "evening": "저녁"
+    }
+    return mapping.get(time_key, time_key)
+
 def get_current_time_slot() -> tuple:
     """
     현재 시간대 판별 및 배출 가능 여부 확인
@@ -229,7 +238,7 @@ def process_queue(machine_id: str, user_id: str, phases: list, ser, adapter=None
         if target < current_stage:
             # 뒤로 가야 하면 HOME으로 리셋 후 다시 전진
             logi(f"  [RESET] Returning to HOME before moving to {time_key}")
-            ok, msg = step_home(ser)
+            ok, msg = step_home(ser) if not settings.DRY_RUN else (True, "OK,DRY")
             logi(f"  HOME(reset): {msg}")
             if not ok:
                 all_ok = False
@@ -240,7 +249,7 @@ def process_queue(machine_id: str, user_id: str, phases: list, ser, adapter=None
             # ★ 이동 시작 알림
             write_state(status="moving", last_uid=_active_kit_uid, phase=time_key, progress=progress)
             if adapter:
-                adapter.notify_status_update(3, f"{time_key} 위치로 이동 중...")
+                adapter.notify_status_update(3, f"{_time_key_to_korean(time_key)} 위치로 이동 중...")
 
             tmv = _t()
             logi(f"  [MOVE] stage {current_stage} → {target} ({time_key})")
@@ -254,36 +263,67 @@ def process_queue(machine_id: str, user_id: str, phases: list, ser, adapter=None
                 break
             current_stage = target
 
+            # ✅ 회전판 이동 후 안정화 시간 (응답 버퍼 완전히 비우기)
+            time.sleep(0.3)
+            ser.reset_input_buffer()  # 남은 응답 제거
+            logi(f"[DEBUG] 회전판 이동 완료 후 0.3초 대기 + 버퍼 클리어")
+
         # ★ 배출 시작 알림
         write_state(status="dispensing", last_uid=_active_kit_uid, phase=time_key, progress=progress)
 
         # 2) 해당 시간대 아이템 전부 배출
         phase_ok = True
-        for it in items:
+        logi(f"[DEBUG] ===== {time_key} 배출 시작 =====")
+        logi(f"[DEBUG] 배출할 아이템 개수: {len(items)}")
+
+        for item_idx, it in enumerate(items):
             slot = int(it.get("slot", 1))
             count = int(it.get("count", 1))
+            medi_id = it.get("medi_id", "unknown")
+
+            logi(f"[DEBUG] --- Item {item_idx + 1}/{len(items)} ---")
+            logi(f"[DEBUG] 원본 item 데이터: {it}")
+            logi(f"[DEBUG] 파싱된 값: slot={slot}, count={count}, medi_id={medi_id}")
 
             if adapter:
-                adapter.notify_status_update(3, f"{time_key} - 슬롯 {slot}에서 {count}개 배출 중...")
+                adapter.notify_status_update(3, f"{_time_key_to_korean(time_key)} - 슬롯 {slot}에서 {count}개 배출 중...")
 
-            logi(f"  [DISPENSE] {time_key} - slot {slot}, count {count}")
+            logi(f"  [DISPENSE] {time_key} - slot {slot}, count {count} (medi_id: {medi_id})")
+            logi(f"[DEBUG] dispense() 호출 파라미터: slot={slot}, count={count}")
+
             ok, msg = dispense(ser, slot, count) if not settings.DRY_RUN else (True, "OK,DRY")
-            logi(f"  -> {msg}")
+            logi(f"  -> Arduino 응답: {msg}")
+            logi(f"[DEBUG] dispense() 결과: ok={ok}, msg={msg}")
 
             if not ok:
                 loge(f"[FAIL] dispense failed for slot {slot}: {msg}")
-                if adapter:
-                    adapter.notify_error(f"슬롯 {slot} 배출 실패!")
                 phase_ok = False
+                logi(f"[DEBUG] phase_ok 설정: False (첫 시도 실패)")
+
                 # 재시도 1회
                 if not settings.DRY_RUN:
-                    logi(f"  [RETRY] Retrying slot {slot}...")
+                    logi(f"  [RETRY] Retrying slot {slot}, count {count}...")
+                    logi(f"[DEBUG] 재시도 dispense() 호출 파라미터: slot={slot}, count={count}")
                     ok2, msg2 = dispense(ser, slot, count)
-                    logi(f"  (retry)-> {msg2}")
+                    logi(f"  (retry)-> Arduino 응답: {msg2}")
+                    logi(f"[DEBUG] 재시도 결과: ok={ok2}, msg={msg2}")
+
                     if ok2:
                         phase_ok = True
+                        logi(f"[DEBUG] phase_ok 설정: True (재시도 성공)")
+                    else:
+                        logi(f"[DEBUG] phase_ok 유지: False (재시도도 실패)")
+
+                # ✅ 팝업 제거: 로그만 남기고 팝업 표시하지 않음
+                logi(f"[DEBUG] 최종 phase_ok 상태: {phase_ok}")
+                if not phase_ok:
+                    loge(f"[WARN] 슬롯 {slot} 배출 실패 (팝업 표시 안 함)")
+            else:
+                logi(f"[DEBUG] 배출 성공 (첫 시도)")
 
             time.sleep(0.1)
+
+        logi(f"[DEBUG] ===== {time_key} 배출 완료 (phase_ok={phase_ok}) =====")
 
         # 3) 시간대별 서버 리포트 (slot 정보 포함)
         payload_items = [
@@ -414,7 +454,7 @@ def main(adapter=None):
                 write_state(status="resolving_uid", last_uid=uid)
                 if adapter:
                     adapter.notify_uid(uid)
-                    adapter.notify_status_update(3, f"UID {uid} 확인 중...")
+                    adapter.notify_status_update(3, f"카드 확인 중...")
 
                 res = resolve_uid(uid)
 
@@ -433,12 +473,35 @@ def main(adapter=None):
 
                 logi(f"[OK] user={user_id}, took_today={took_today}")
 
+                # ===== 사용자 이름 조회 (빠른 피드백용) =====
+                users = get_users_for_machine(machine_id)
+                user_name = "알 수 없는 사용자"
+                if users:
+                    for user in users:
+                        if str(user.get("user_id")) == user_id:
+                            user_name = user.get("name")
+                            break
+
+                # ✅ 사용자 이름 표시
+                if adapter:
+                    adapter.notify_status_update(3, f"{user_name}님 확인됨")
+
                 # ===== 1) 현재 시간대 확인 =====
+                now_time = datetime.now()
+                current_hour = now_time.hour
+                current_minute = now_time.minute
+                logi(f"[DEBUG] ===== 시간대 확인 =====")
+                logi(f"[DEBUG] 현재 시각: {current_hour:02d}:{current_minute:02d}")
+
                 current_slot, time_message = get_current_time_slot()
+                logi(f"[DEBUG] current_slot: {current_slot}")
+                logi(f"[DEBUG] time_message: {time_message}")
+                logi(f"[DEBUG] ==========================")
 
                 if current_slot is None:
                     # 배출 불가 시간대 (00:00~06:00)
-                    logi(f"[REJECT] 배출 불가 시간대: {datetime.now().hour}시")
+                    logi(f"[REJECT] 배출 불가 시간대: {current_hour}시 {current_minute}분")
+                    logi(f"[REJECT] current_slot이 None입니다. 배출을 건너뜁니다.")
                     write_state(status="out_of_time", last_uid=uid)
                     if adapter:
                         adapter.notify_status_update(3, time_message)
@@ -453,15 +516,6 @@ def main(adapter=None):
                     logi(f"[INFO] 이미 오늘 복용 완료 (user={user_id})")
                     write_state(status="already_taken", last_uid=uid)
 
-                    # user_name 찾기
-                    users = get_users_for_machine(machine_id)
-                    user_name = "알 수 없는 사용자"
-                    if users:
-                        for user in users:
-                            if str(user.get("user_id")) == user_id:
-                                user_name = user.get("name")
-                                break
-
                     if adapter:
                         adapter.notify_status_update(3, f"오늘 이미 복용하셨습니다 ({user_name}님)")
                     time.sleep(3)
@@ -469,16 +523,7 @@ def main(adapter=None):
                         adapter.notify_waiting()
                     continue
 
-                # ===== 3) user_name 찾기 =====
-                users = get_users_for_machine(machine_id)
-                user_name = "알 수 없는 사용자"
-                if users:
-                    for user in users:
-                        if str(user.get("user_id")) == user_id:
-                            user_name = user.get("name")
-                            break
-
-                # ===== 4) 스케줄 조회 =====
+                # ===== 3) 스케줄 조회 =====
                 logi(f"[SCHEDULE] 현재 시간대: {current_slot} ({datetime.now().hour}시)")
                 if adapter:
                     adapter.notify_status_update(3, f"{user_name}님 스케줄 조회 중... ({time_message})")
@@ -510,9 +555,38 @@ def main(adapter=None):
                     if adapter: adapter.notify_waiting()
                     continue
 
+                # ===== DEBUG: 서버에서 받은 원본 큐 출력 =====
+                logi(f"[DEBUG] ===== 서버 응답 원본 큐 =====")
+                logi(f"[DEBUG] 전체 phases 개수: {len(phases)}")
+                for idx, phase in enumerate(phases):
+                    time_key = phase.get("time", "unknown")
+                    items = phase.get("items", [])
+                    logi(f"[DEBUG] Phase {idx}: time={time_key}, items_count={len(items)}")
+                    for item_idx, item in enumerate(items):
+                        logi(f"[DEBUG]   Item {item_idx}: slot={item.get('slot')}, count={item.get('count')}, medi_id={item.get('medi_id')}")
+                logi(f"[DEBUG] ================================")
+
                 # ===== 5) 현재 시간대에 맞게 필터링 =====
-                filtered_phases = filter_phases_by_time(phases, current_slot)
+                logi(f"[DEBUG] 필터링 전 current_slot 재확인: {current_slot}")
+
+                # ✅ 안전장치: current_slot이 None이면 빈 리스트 반환
+                if current_slot is None:
+                    loge(f"[ERR] current_slot이 None입니다! 필터링을 건너뛰고 빈 큐로 처리합니다.")
+                    filtered_phases = []
+                else:
+                    filtered_phases = filter_phases_by_time(phases, current_slot)
+
                 logi(f"[FILTER] 전체={len(phases)}, 필터링 후={len(filtered_phases)}, 시간대={current_slot}")
+
+                # ===== DEBUG: 필터링 후 큐 출력 =====
+                logi(f"[DEBUG] ===== 필터링 후 큐 =====")
+                for idx, phase in enumerate(filtered_phases):
+                    time_key = phase.get("time", "unknown")
+                    items = phase.get("items", [])
+                    logi(f"[DEBUG] Filtered Phase {idx}: time={time_key}, items_count={len(items)}")
+                    for item_idx, item in enumerate(items):
+                        logi(f"[DEBUG]   Item {item_idx}: slot={item.get('slot')}, count={item.get('count')}, medi_id={item.get('medi_id')}")
+                logi(f"[DEBUG] ================================")
 
                 # ===== 6) 필터링 후 비어있는지 확인 =====
                 if not filtered_phases or all(not p.get("items") for p in filtered_phases):
@@ -543,12 +617,13 @@ def main(adapter=None):
                 # ★★★ process_queue 호출 (시간대별 회전판 이동 + 배출) ★★★
                 # 필터링된 시간대 목록
                 filtered_times = [p.get("time") for p in filtered_phases if p.get("items")]
+                filtered_times_korean = [_time_key_to_korean(t) for t in filtered_times]
                 first_phase = filtered_phases[0].get("time") if filtered_phases else "morning"
 
                 write_state(status="queue_ready", last_uid=uid, phase=first_phase)
                 logi(f"[QUEUE] 배출 시작: {user_name}님 - {filtered_times}")
                 if adapter:
-                    adapter.notify_status_update(3, f"{user_name}님 약 배출 시작... ({', '.join(filtered_times)})")
+                    adapter.notify_status_update(3, f"{user_name}님 약 배출 시작... ({', '.join(filtered_times_korean)})")
 
                 progress = {}  # 예외 발생 시에도 안전하도록 초기화
                 all_success, progress = process_queue(machine_id, user_id, filtered_phases, ser, adapter)

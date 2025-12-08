@@ -72,7 +72,7 @@ class SerialReaderAdapter:
             self._thread.start()
 
     def is_ready(self):
-        return self._ready_event.is_set()
+        return self._ready_event.is_set() and (self._thread is None or self._thread.is_alive())
 
     def stop(self):
         print("Adapter stopping...")

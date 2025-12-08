@@ -43,13 +43,15 @@ void servoMoveFB(char dir, int speedPercent, unsigned long ms) {
 
 void servoStepNext() {
   if (g_servoStage == 0) {
+    // ✅ 시작 시에만 neutral (정렬)
     servoNeutral(); delay(100);
     servoMoveFB('F', kSERVO_STEP_SPEED, kSERVO_MS_STEP1);
-    servoNeutral(); delay(100);
+    // 중간 neutral 제거 → 한번에 쭉 회전
     g_servoStage = 1;
   } else if (g_servoStage == 1) {
-    servoNeutral(); delay(100);
+    // 이미 회전 중이므로 neutral 제거
     servoMoveFB('F', kSERVO_STEP_SPEED, kSERVO_MS_STEP2);
+    // ✅ 끝날 때만 neutral (정지)
     servoNeutral(); delay(100);
     g_servoStage = 2;
   }
@@ -58,14 +60,16 @@ void servoStepNext() {
 
 void servoReturnHome() {
   if (g_servoStage == 2) {
+    // ✅ 시작 시에만 neutral
     servoNeutral(); delay(100);
     servoMoveFB('B', kSERVO_STEP_SPEED, kSERVO_MS_STEP2);
-    servoNeutral(); delay(100);
+    // 중간 neutral 제거 → 한번에 쭉 회전
     g_servoStage = 1;
   }
   if (g_servoStage == 1) {
-    servoNeutral(); delay(100);
+    // 이미 회전 중이므로 neutral 제거
     servoMoveFB('B', kSERVO_STEP_SPEED, kSERVO_MS_STEP1);
+    // ✅ 끝날 때만 neutral (정지)
     servoNeutral(); delay(100);
     g_servoStage = 0;
   }

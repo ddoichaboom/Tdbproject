@@ -8,7 +8,11 @@ def autodetect_port():
             return p.device
     return None
 
-def open_serial(baud_rate=9600, timeout=1):
+def open_serial(baud_rate=9600, timeout=0.1):
+    """
+    Arduino 시리얼 포트 열기
+    timeout: 0.1초로 설정하여 블로킹 시간 최소화 (기존 1.0초에서 개선)
+    """
     port = autodetect_port()
     if not port:
         raise IOError("Arduino not found")
@@ -40,7 +44,13 @@ def _send_cmd_wait(ser: serial.Serial, cmd: str, timeout=5.0):
     return False, "ERR,TIMEOUT"
 
 def dispense(ser, slot: int, count: int):
-    return _send_cmd_wait(ser, f"DISPENSE,{int(slot)},{int(count)}")
+    """
+    약 배출 명령 전송
+    타임아웃: 기본 4초 + (count * 1초)로 약 개수에 비례하여 조정
+    """
+    # ✅ 타임아웃 증가: 4초 기본 + 약 1개당 1초 (기존: 2초 + 0.5초)
+    timeout = 4.0 + (int(count) * 1.0)
+    return _send_cmd_wait(ser, f"DISPENSE,{int(slot)},{int(count)}", timeout=timeout)
 
 def send_raw(ser, line: str, timeout: float = 8.0):
     """명령 전송 후 OK/ERR 응답 수신. 중간 메시지는 무시하고 최종 응답만 반환."""
