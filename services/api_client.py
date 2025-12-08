@@ -23,9 +23,11 @@ def _request(method, path, **kwargs):
     url = f"{settings.SERVER_BASE_URL}{path}"
     try:
         s = _get_session()
-        res = s.request(method, url, timeout=5, **kwargs)
+        # 타임아웃 10초로 증가 (네트워크 지연 대비)
+        timeout = kwargs.pop('timeout', 10)
+        res = s.request(method, url, timeout=timeout, **kwargs)
         res.raise_for_status()
-        
+
         json_res = res.json()
         if json_res and "data" in json_res:
             return json_res["data"]

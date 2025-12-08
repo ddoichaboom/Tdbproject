@@ -16,10 +16,17 @@ def open_serial(baud_rate=9600, timeout=0.1):
     port = autodetect_port()
     if not port:
         raise IOError("Arduino not found")
-    ser = serial.Serial(port, baud_rate, timeout=timeout)
-    time.sleep(2) # Wait for Arduino to reset
-    ser.flushInput()
-    return ser
+
+    ser = None
+    try:
+        ser = serial.Serial(port, baud_rate, timeout=timeout)
+        time.sleep(2)  # Wait for Arduino to reset
+        ser.reset_input_buffer()  # flushInput() is deprecated
+        return ser
+    except Exception as e:
+        if ser and ser.is_open:
+            ser.close()
+        raise IOError(f"Failed to open serial port {port}: {e}")
 
 def read_uid_once(ser: serial.Serial):
     line = ser.readline().decode("ascii", "ignore").strip().upper()

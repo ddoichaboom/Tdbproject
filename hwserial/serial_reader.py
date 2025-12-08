@@ -265,7 +265,11 @@ def process_queue(machine_id: str, user_id: str, phases: list, ser, adapter=None
 
             # ✅ 회전판 이동 후 안정화 시간 (응답 버퍼 완전히 비우기)
             time.sleep(0.3)
-            ser.reset_input_buffer()  # 남은 응답 제거
+            try:
+                if ser and hasattr(ser, 'is_open') and ser.is_open:
+                    ser.reset_input_buffer()  # 남은 응답 제거
+            except Exception as e:
+                loge(f"[WARN] Failed to clear serial buffer: {e}")
             logi(f"[DEBUG] 회전판 이동 완료 후 0.3초 대기 + 버퍼 클리어")
 
         # ★ 배출 시작 알림
@@ -438,9 +442,17 @@ def main(adapter=None):
                     except Exception as e:
                         loge(f"[HB] failed: {e}")
                     last_hb = now
-    
-                uid = read_uid_once(ser)
-                if not uid:
+
+                # UID 읽기 (시리얼 연결 오류 방어)
+                try:
+                    uid = read_uid_once(ser)
+                    if not uid:
+                        continue
+                except Exception as e:
+                    loge(f"[ERR] Failed to read UID from serial: {e}")
+                    if adapter:
+                        adapter.notify_error(f"RFID 읽기 오류: {e}")
+                    time.sleep(1)
                     continue
     
                 if uid == _last_uid and (now - _last_ts) < settings.UID_COOLDOWN_SEC:
